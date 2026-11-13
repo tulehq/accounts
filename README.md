@@ -227,13 +227,13 @@ paginators work.
 - **Signature verification is request-level,** by
   [tule.dev/sigv4](https://github.com/tulehq/sigv4). The method, path, query,
   signed headers and the body's hash are checked, along with the credential's
-  access key and a 15-minute clock skew. A request body larger than 1 MiB is
-  refused. A signature must cover `host`, `x-amz-date` and `x-amz-target`,
-  and every `x-amz-*` header the request carries, and the `SignedHeaders`
-  list must be lowercase, sorted and unique. It must carry a real SHA-256 of
-  the body: `UNSIGNED-PAYLOAD` is rejected, since it would leave the body
-  outside the signature and let a relay swap one operation's body for
-  another's.
+  access key and service and a 15-minute clock skew. A request body larger
+  than 1 MiB is refused. A signature must cover `host`, `x-amz-date` and
+  `x-amz-target`, and every `x-amz-*` header the request carries, and the
+  `SignedHeaders` list must be lowercase, sorted and unique. It must carry a
+  real SHA-256 of the body: `UNSIGNED-PAYLOAD` is rejected, since it would
+  leave the body outside the signature and let a relay swap one operation's
+  body for another's.
 - **The credential's region is not checked.** It is signed, but any region
   verifies: Organizations is global behind `us-east-1`, and local clients are
   set up for whatever region they work in.
