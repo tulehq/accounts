@@ -74,7 +74,10 @@ a key identity deactivates or deletes is refused on the next one. A request
 signed with the configured key never asks identity. When identity cannot be
 asked, fails, or gives no answer within 10 seconds, a request signed with
 another key fails with `500` `ServiceException`, never as an unknown key,
-and the configured key keeps working.
+and the configured key keeps working. The endpoint must be identity v0.4.0
+or later: accounts asks for version 3 of the signing-key answer, which
+carries the principal's role path, unique ID and tags, and an older identity
+fails every request signed with a key it issued as `ServiceException`.
 
 ## Permissions
 
@@ -393,7 +396,7 @@ make push VERSION=0.1.0   # build for amd64 and arm64 and push
 The end-to-end tests include ones against a real identity service, built
 from an identity checkout and run as a process pointed back at the app under
 test: identity-issued keys, and their policies enforced. The checkout is identity's sibling, `../identity`, by default, or the
-directory `TULE_E2E_IDENTITY_DIR` names; CI checks out `tulehq/identity` at v0.2.0 and
+directory `TULE_E2E_IDENTITY_DIR` names; CI checks out `tulehq/identity` at v0.4.0 and
 sets it. Without a checkout that test fails rather than being skipped.
 
 ## License
