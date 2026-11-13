@@ -299,8 +299,8 @@ func (a *Authorizer) cachedPolicies() int {
 //   - aws:RequestedRegion, always Region, whatever region the request was
 //     signed for.
 //   - aws:PrincipalTag/<key> for each of the principal's tags: an IAM
-//     user's, or a role session's role and session tags, as identity
-//     merges them. Identity keeps the keys unique regardless of case and at
+//     user's, or a role session's role's (identity issues no session
+//     tags). Identity keeps the keys unique regardless of case and at
 //     most 50.
 func GlobalKeys(r *http.Request, p Principal, now time.Time) map[string][]string {
 	now = now.UTC()

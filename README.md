@@ -173,7 +173,8 @@ since this service accepts any), the principal's `aws:PrincipalAccount`,
 `aws:PrincipalArn` (an IAM user's ARN, or a role session's role ARN with
 its path, such as `arn:aws:iam::<account>:role/audit/auditor`),
 `aws:userid`, `aws:PrincipalType`, `aws:PrincipalTag/<key>` (an IAM user's
-tags, or a role session's role and session tags) and, for an IAM user,
+tags, or a role session's role's tags, since identity issues no session
+tags) and, for an IAM user,
 `aws:username`, all from what identity returns for the key; and the keys the
 reference lists for the operations that this service has:
 `aws:ResourceTag/<key>` from each evaluated resource's tags, and
@@ -200,8 +201,10 @@ Known gaps in authorization:
   not evaluated. Resource-based policies are not served: Organizations'
   resource policy operations are not routed, no resource policy is stored,
   and none is evaluated.
-- `aws:PrincipalOrgID` and `aws:PrincipalOrgPaths` are not supplied, so a
-  condition on them never holds.
+- `aws:PrincipalOrgID` and `aws:PrincipalOrgPaths` are not supplied. A
+  positive condition on them, such as `StringEquals`, never holds, and a
+  negated one, such as `StringNotEquals`, always holds, so a Deny with a
+  negated operator on them denies every evaluated principal.
 - A principal of another account may call `DescribeOrganization` only
   while its account is an `ACTIVE` member, and is then evaluated against its
   own identity policies alone, as AWS lets any account in the organization
