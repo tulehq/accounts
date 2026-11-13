@@ -27,7 +27,8 @@ var identityTimeout = 10 * time.Second
 // through. It knows the configured root key, belonging to the management
 // account's root user, and, when an identity endpoint is configured, every
 // key identity issued, asked of identity on each request after the root key.
-// Any key it accepts may call every operation: there are no permissions.
+// The root key may call every operation; any other key is held to its
+// identity policies by the organization module's authorization.
 // Requests are accepted signed for organizations in any region. Host,
 // X-Amz-Date and X-Amz-Target must be signed: X-Amz-Target names the
 // operation, and left unsigned it would let whoever relays a signed read

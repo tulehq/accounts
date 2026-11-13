@@ -72,6 +72,7 @@ const (
 	TypeInvalidSignature            = "InvalidSignatureException"
 	TypeUnrecognizedClient          = "UnrecognizedClientException"
 	TypeExpiredToken                = "ExpiredTokenException"
+	TypeAccessDenied                = "AccessDeniedException"
 	constraintReasonOUDepth         = "OU_DEPTH_LIMIT_EXCEEDED"
 	constraintReasonOUNumber        = "OU_NUMBER_LIMIT_EXCEEDED"
 	constraintReasonMaxTags         = "MAX_TAG_LIMIT_EXCEEDED"
@@ -136,6 +137,48 @@ func ErrService() *Error {
 	return NewError(http.StatusInternalServerError, TypeService,
 		"AWS Organizations can't complete your request because of an internal service error. "+
 			"Try again later.")
+}
+
+// ErrNotAllowed is the AccessDeniedException of a request no identity-based
+// policy allows, in the form of AWS's authorization messages ("Troubleshoot
+// access denied error messages", IAM User Guide). The API reference gives
+// AccessDeniedException the status 400.
+func ErrNotAllowed(callerARN, action, resource string) *Error {
+	return clientError(TypeAccessDenied, notAuthorized(callerARN, action, resource)+
+		" because no identity-based policy allows the "+action+" action")
+}
+
+// ErrExplicitlyDenied is the AccessDeniedException of a request an
+// identity-based policy denies, in the form of AWS's messages.
+func ErrExplicitlyDenied(callerARN, action, resource string) *Error {
+	return clientError(TypeAccessDenied, notAuthorized(callerARN, action, resource)+
+		" with an explicit deny in an identity-based policy")
+}
+
+func notAuthorized(callerARN, action, resource string) string {
+	return "User: " + callerARN + " is not authorized to perform: " + action +
+		" on resource: " + resource
+}
+
+// ErrNotManagementAccount is the AccessDeniedException Organizations answers
+// a principal of a member account with for an operation only the management
+// account (or a delegated administrator) may call, whatever its policies
+// allow. The message is AWS's as AWS's re:Post knowledge center reports it
+// for a call from a member account
+// (https://repost.aws/knowledge-center/config-organizations-admin); the API
+// reference does not give it.
+func ErrNotManagementAccount() *Error {
+	return clientError(TypeAccessDenied, "You don't have permissions to access this resource.")
+}
+
+// ErrAccountNotActive is the AccessDeniedException a principal of a closed
+// member account is answered with. AWS says only that "you cannot access
+// AWS services" from a closed account, and "You can't make API calls to AWS
+// services from a suspended account" ("Monitor the state of your AWS
+// accounts", Organizations User Guide), without the error; this service
+// answers as it answers a member account refused an operation.
+func ErrAccountNotActive() *Error {
+	return ErrNotManagementAccount()
 }
 
 func clientError(errType, msg string) *Error {

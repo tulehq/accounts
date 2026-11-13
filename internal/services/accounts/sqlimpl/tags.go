@@ -140,3 +140,20 @@ func (s *Service) ListTagsForResource(
 	})
 	return out, err
 }
+
+// ResourceTags returns every tag of a resource in key order: at most
+// contracts.MaxTagsPerResource, so one query reads them all. A resource that
+// does not exist has none.
+func (s *Service) ResourceTags(ctx context.Context, resourceID string) ([]contracts.Tag, error) {
+	var out []contracts.Tag
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		var qErr error
+		out, qErr = queryAll(ctx, tx, func(r scanner) (contracts.Tag, error) {
+			var t contracts.Tag
+			sErr := r.Scan(&t.Key, &t.Value)
+			return t, sErr
+		}, `SELECT key, value FROM tags WHERE resource_id = ? ORDER BY key`, resourceID)
+		return qErr
+	})
+	return out, err
+}

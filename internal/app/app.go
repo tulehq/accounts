@@ -13,6 +13,7 @@ import (
 	"github.com/gasmod/gas/migrate"
 	"tule.dev/sigv4"
 
+	"tule.dev/accounts/internal/authz"
 	"tule.dev/accounts/internal/contracts"
 	"tule.dev/accounts/internal/httpx"
 	"tule.dev/accounts/internal/modules/health"
@@ -86,6 +87,8 @@ func databaseConfig(store *sqlimpl.Settings) *database.Config {
 func registerAppServices(app *gas.App, cfg *Config) {
 	app.RegisterSingletonService[contracts.OrganizationProvider](
 		sqlimpl.NewService(cfg.Organization))
+	app.RegisterServiceInstance[*authz.Authorizer](
+		authz.New(cfg.Organization.ManagementAccountID))
 }
 
 func registerAppModules(app *gas.App) {

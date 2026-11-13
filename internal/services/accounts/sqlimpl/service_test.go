@@ -926,3 +926,27 @@ func TestDataOutlivesTheConnection(t *testing.T) {
 		t.Fatalf("organization = %s, want %s", got.ID, o.ID)
 	}
 }
+
+func TestResourceTagsReadsEveryTag(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newOrgStore(t)
+	id := createAccount(t, s, "member")
+
+	tags := make([]contracts.Tag, 0, contracts.MaxTagsPerResource)
+	for i := range contracts.MaxTagsPerResource {
+		tags = append(tags, contracts.Tag{Key: fmt.Sprintf("k%02d", i), Value: "v"})
+	}
+	requireNoErr(t, s.TagResource(ctx, id, tags), "tag")
+
+	got, err := s.ResourceTags(ctx, id)
+	requireNoErr(t, err, "resource tags")
+	if len(got) != len(tags) || got[0] != tags[0] || got[len(got)-1] != tags[len(tags)-1] {
+		t.Fatalf("got %v, want all %d tags in key order", got, len(tags))
+	}
+
+	got, err = s.ResourceTags(ctx, "999999999999")
+	requireNoErr(t, err, "resource tags of nothing")
+	if len(got) != 0 {
+		t.Fatalf("a missing resource has tags %v", got)
+	}
+}
