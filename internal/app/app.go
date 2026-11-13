@@ -11,13 +11,13 @@ import (
 	"github.com/gasmod/gas"
 	"github.com/gasmod/gas/database"
 	"github.com/gasmod/gas/migrate"
+	"tule.dev/sigv4"
 
 	"tule.dev/accounts/internal/contracts"
 	"tule.dev/accounts/internal/httpx"
 	"tule.dev/accounts/internal/modules/health"
 	"tule.dev/accounts/internal/modules/organization"
 	"tule.dev/accounts/internal/services/accounts/sqlimpl"
-	"tule.dev/accounts/internal/sigv4"
 )
 
 // New builds the application from cfg. extra options are applied after the
@@ -42,7 +42,12 @@ func New(cfg *Config, extra ...gas.Option) (*gas.App, error) {
 	registerInfraServices(app, cfg, logger)
 	registerAppServices(app, cfg)
 	registerAppModules(app)
-	installMiddleware(app.Router(), cfg, logger)
+
+	verifier, err := newVerifier(cfg)
+	if err != nil {
+		return nil, err
+	}
+	installMiddleware(app.Router(), cfg, logger, verifier)
 
 	return app, nil
 }
@@ -88,7 +93,7 @@ func registerAppModules(app *gas.App) {
 	app.RegisterSingletonService[*health.Module](health.NewModule)
 }
 
-func installMiddleware(r *gas.Router, cfg *Config, logger gas.Logger) {
+func installMiddleware(r *gas.Router, cfg *Config, logger gas.Logger, verifier *sigv4.Verifier) {
 	r.UseMiddlewareFunc(nil, httpx.RequestID(cfg.Env))
 
 	// No X-Forwarded-For handling: nothing is expected in front of this
@@ -99,10 +104,7 @@ func installMiddleware(r *gas.Router, cfg *Config, logger gas.Logger) {
 
 	r.UseMiddlewareFunc(nil, gas.RequestLogger[httpx.RequestLogger]())
 
-	r.UseMiddlewareFunc(nil, verifySignature(sigv4.NewVerifier(sigv4.Credentials{
-		AccessKeyID:     cfg.Auth.AccessKeyID,
-		SecretAccessKey: cfg.Auth.SecretAccessKey,
-	})))
+	r.UseMiddlewareFunc(nil, verifySignature(verifier))
 
 	var hsts string
 	if cfg.HSTS != nil && cfg.HSTS.MaxAge > 0 {
