@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
+	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 	awsorg "github.com/aws/aws-sdk-go-v2/service/organizations"
 	"github.com/aws/aws-sdk-go-v2/service/organizations/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
@@ -49,6 +50,9 @@ func TestIdentityPoliciesAreEnforced(t *testing.T) {
 	t.Run("aws:ResourceTag and aws:RequestTag are honored", f.testTagConditions)
 	t.Run("a create with tags also needs TagResource", f.testTagOnCreate)
 	t.Run("a role session gets the role's permissions", s.testRolePermissions)
+	t.Run("aws:PrincipalArn is a session's role ARN with its path", s.testRolePathCondition)
+	t.Run("aws:PrincipalTag is honored", s.testPrincipalTag)
+	t.Run("a session whose role was deleted is refused", s.testOrphanedSession)
 	t.Run("a member account's session is refused but DescribeOrganization", f.testMemberAccount)
 	t.Run("a removed or closed account may not describe the organization",
 		f.testFormerMember)
@@ -285,6 +289,113 @@ func (s *identityStack) testRolePermissions(t *testing.T) {
 	// The IAM user's own key has none of the role's permissions.
 	requireCode(t, errOf(orgClientWith(s.srv, userKey).ListAccounts(t.Context(),
 		&awsorg.ListAccountsInput{})), "AccessDeniedException")
+}
+
+// roleSession creates a role at path that trusts the IAM user assumer, with
+// the inline policy doc and tags, and returns a client signing with a
+// session of it named e2e.
+func (s *identityStack) roleSession(
+	t *testing.T, assumer aws.Credentials, assumerName, path, name, doc string,
+	tags ...iamtypes.Tag,
+) *awsorg.Client {
+	t.Helper()
+	trust := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow",` +
+		`"Principal":{"AWS":"` + userARNPrefix + assumerName + `"},"Action":"sts:AssumeRole"}]}`
+	_, err := s.iam.CreateRole(t.Context(), &iam.CreateRoleInput{
+		RoleName:                 aws.String(name),
+		Path:                     aws.String(path),
+		AssumeRolePolicyDocument: aws.String(trust),
+		Tags:                     tags,
+	})
+	requireNoErr(t, err, "create role "+name)
+	_, err = s.iam.PutRolePolicy(t.Context(), &iam.PutRolePolicyInput{
+		RoleName:       aws.String(name),
+		PolicyName:     aws.String("organizations"),
+		PolicyDocument: aws.String(doc),
+	})
+	requireNoErr(t, err, "put a policy for role "+name)
+	out, err := stsClient(s.identityURL, assumer).AssumeRole(t.Context(), &sts.AssumeRoleInput{
+		RoleArn:         aws.String("arn:aws:iam::" + defaultManagementID + ":role" + path + name),
+		RoleSessionName: aws.String("e2e"),
+	})
+	requireNoErr(t, err, "assume role "+name)
+	return orgClientWith(s.srv, aws.Credentials{
+		AccessKeyID:     aws.ToString(out.Credentials.AccessKeyId),
+		SecretAccessKey: aws.ToString(out.Credentials.SecretAccessKey),
+		SessionToken:    aws.ToString(out.Credentials.SessionToken),
+	})
+}
+
+// testRolePathCondition gives a role at /deploy/ an Allow conditioned on
+// its ARN with the path and a Deny on any role under that path: the
+// session's aws:PrincipalArn is the role's ARN with its path, so both
+// apply.
+func (s *identityStack) testRolePathCondition(t *testing.T) {
+	c := s.roleSession(t, createUserKey(t, s.iam, "deployer"), "deployer", "/deploy/",
+		"release", `{"Version":"2012-10-17","Statement":[`+
+			`{"Effect":"Allow","Action":["organizations:ListRoots","organizations:ListAccounts"],`+
+			`"Resource":"*","Condition":{"ArnEquals":{"aws:PrincipalArn":`+
+			`"arn:aws:iam::`+defaultManagementID+`:role/deploy/release"}}},`+
+			`{"Effect":"Deny","Action":"organizations:ListAccounts","Resource":"*",`+
+			`"Condition":{"ArnLike":{"aws:PrincipalArn":"arn:aws:iam::*:role/deploy/*"}}}]}`)
+
+	_, err := c.ListRoots(t.Context(), &awsorg.ListRootsInput{})
+	requireNoErr(t, err, "list roots, allowed on the role ARN with its path")
+	err = errOf(c.ListAccounts(t.Context(), &awsorg.ListAccountsInput{}))
+	requireAccessDenied(t, err, "User: arn:aws:sts::"+defaultManagementID+
+		":assumed-role/release/e2e is not authorized to perform: "+
+		"organizations:ListAccounts on resource: * with an explicit deny in an "+
+		"identity-based policy")
+}
+
+// testPrincipalTag allows ListRoots to principals tagged team=ops: an IAM
+// user tagged so, and a session of a role tagged so, are allowed; an
+// untagged user with the same policy is not.
+func (s *identityStack) testPrincipalTag(t *testing.T) {
+	doc := conditionDoc("organizations:ListRoots",
+		`{"StringEquals":{"aws:PrincipalTag/team":"ops"}}`)
+	ops := []iamtypes.Tag{{Key: aws.String("team"), Value: aws.String("ops")}}
+
+	tagged := s.userWithPolicy(t, "tagged", doc)
+	_, err := s.iam.TagUser(t.Context(), &iam.TagUserInput{
+		UserName: aws.String("tagged"), Tags: ops,
+	})
+	requireNoErr(t, err, "tag user")
+	_, err = tagged.ListRoots(t.Context(), &awsorg.ListRootsInput{})
+	requireNoErr(t, err, "list roots as a user tagged team=ops")
+
+	untagged := s.userWithPolicy(t, "untagged", doc)
+	err = errOf(untagged.ListRoots(t.Context(), &awsorg.ListRootsInput{}))
+	requireAccessDenied(t, err, "User: "+userARNPrefix+"untagged is not authorized to "+
+		"perform: organizations:ListRoots on resource: * because no identity-based "+
+		"policy allows the organizations:ListRoots action")
+
+	session := s.roleSession(t, createUserKey(t, s.iam, "opsassumer"), "opsassumer", "/",
+		"opsrole", doc, ops...)
+	_, err = session.ListRoots(t.Context(), &awsorg.ListRootsInput{})
+	requireNoErr(t, err, "list roots as a session of a role tagged team=ops")
+}
+
+// testOrphanedSession takes a session of a role, deletes the role, and
+// calls with the session, which still authenticates until it expires.
+func (s *identityStack) testOrphanedSession(t *testing.T) {
+	c := s.roleSession(t, createUserKey(t, s.iam, "orphaner"), "orphaner", "/",
+		"doomed", allowDoc("organizations:ListRoots", "*"))
+	_, err := c.ListRoots(t.Context(), &awsorg.ListRootsInput{})
+	requireNoErr(t, err, "list roots while the role exists")
+
+	_, err = s.iam.DeleteRolePolicy(t.Context(), &iam.DeleteRolePolicyInput{
+		RoleName: aws.String("doomed"), PolicyName: aws.String("organizations"),
+	})
+	requireNoErr(t, err, "delete the role's policy")
+	_, err = s.iam.DeleteRole(t.Context(), &iam.DeleteRoleInput{RoleName: aws.String("doomed")})
+	requireNoErr(t, err, "delete the role")
+
+	err = errOf(c.ListRoots(t.Context(), &awsorg.ListRootsInput{}))
+	requireAccessDenied(t, err, "User: arn:aws:sts::"+defaultManagementID+
+		":assumed-role/doomed/e2e is not authorized to perform: organizations:ListRoots "+
+		"on resource: * because no identity-based policy allows the "+
+		"organizations:ListRoots action")
 }
 
 func TestStandaloneEvaluatesNothing(t *testing.T) {

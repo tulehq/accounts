@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"tule.dev/policy"
 	"tule.dev/sigv4"
 
 	"tule.dev/accounts/internal/contracts"
@@ -19,8 +20,10 @@ import (
 
 const (
 	management = "000000000000"
+	member     = "111111111111"
 	userARN    = "arn:aws:iam::000000000000:user/team/dev"
 	sessionARN = "arn:aws:sts::000000000000:assumed-role/ops/e2e"
+	roleARN    = "arn:aws:iam::000000000000:role/platform/ops"
 	accountARN = "arn:aws:organizations::000000000000:account/o-abcdefghij/111111111111"
 	ouARN      = "arn:aws:organizations::000000000000:ou/o-abcdefghij/ou-abcd-12345678"
 )
@@ -30,7 +33,14 @@ func principal(p sigv4.Principal) Principal {
 }
 
 func user(docs ...string) Principal {
-	p := principal(sigv4.Principal{AccountID: management, ARN: userARN, AccessKeyID: "AKIAEXAMPLE"})
+	p := principal(sigv4.Principal{
+		AccountID:    management,
+		ARN:          userARN,
+		PrincipalARN: userARN,
+		UserID:       "AIDAEXAMPLEUSERID0001",
+		Type:         sigv4.PrincipalTypeUser,
+		AccessKeyID:  "AKIAEXAMPLE",
+	})
 	for _, d := range docs {
 		p.Policies = append(p.Policies, json.RawMessage(d))
 	}
@@ -272,50 +282,18 @@ func TestTheCacheIsBounded(t *testing.T) {
 
 func TestGlobalKeys(t *testing.T) {
 	now := time.Date(2026, 11, 13, 10, 0, 0, 0, time.FixedZone("EET", 2*3600))
-	base := map[string][]string{
-		"aws:CurrentTime":      {"2026-11-13T08:00:00Z"},
-		"aws:EpochTime":        {"1794556800"},
-		"aws:SecureTransport":  {"false"},
-		"aws:PrincipalAccount": {management},
-		"aws:SourceIp":         {"192.0.2.10"},
-		"aws:RequestedRegion":  {"us-east-1"},
+	got := GlobalKeys(request(), taggedSession(map[string]string{"team": "ops", "Env": "dev"}), now)
+	want := map[string][]string{
+		"aws:CurrentTime":       {"2026-11-13T08:00:00Z"},
+		"aws:EpochTime":         {"1794556800"},
+		"aws:SecureTransport":   {"false"},
+		"aws:SourceIp":          {"192.0.2.10"},
+		"aws:RequestedRegion":   {"us-east-1"},
+		"aws:PrincipalTag/team": {"ops"},
+		"aws:PrincipalTag/Env":  {"dev"},
 	}
-	with := func(extra map[string][]string) map[string][]string {
-		out := map[string][]string{}
-		for k, v := range base {
-			out[k] = v
-		}
-		for k, v := range extra {
-			out[k] = v
-		}
-		return out
-	}
-
-	for name, tc := range map[string]struct {
-		want map[string][]string
-		arn  string
-	}{
-		"IAM user": {arn: userARN, want: with(map[string][]string{
-			"aws:PrincipalArn":  {userARN},
-			"aws:username":      {"dev"},
-			"aws:PrincipalType": {"User"},
-		})},
-		"role session": {arn: sessionARN, want: with(map[string][]string{
-			"aws:PrincipalArn":  {"arn:aws:iam::000000000000:role/ops"},
-			"aws:PrincipalType": {"AssumedRole"},
-		})},
-		"other principal": {arn: "arn:aws:iam::000000000000:root", want: base},
-	} {
-		t.Run(name, func(t *testing.T) {
-			got := GlobalKeys(
-				request(),
-				principal(sigv4.Principal{AccountID: management, ARN: tc.arn}),
-				now,
-			)
-			if !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("got  %v\nwant %v", got, tc.want)
-			}
-		})
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got  %v\nwant %v", got, want)
 	}
 }
 
@@ -339,32 +317,169 @@ func TestGlobalKeysOfTheConnection(t *testing.T) {
 	})
 }
 
-func TestPrincipalARNParsing(t *testing.T) {
-	for arn, want := range map[string]string{
-		"arn:aws:iam::000000000000:user/dev":          "dev",
-		"arn:aws:iam::000000000000:user/a/b/dev":      "dev",
-		"arn:aws:iam::000000000000:user/":             "",
-		"arn:aws:iam::000000000000:role/dev":          "",
-		"arn:aws:sts::000000000000:assumed-role/r/s":  "",
-		"arn:aws:iam:us-east-1:000000000000:user/dev": "",
-		"not an arn": "",
-	} {
-		got, _ := userName(arn)
-		if got != want {
-			t.Errorf("userName(%q) = %q, want %q", arn, got, want)
-		}
+// session is a session of the role ops, at path /platform/, in the
+// management account, with the policy docs.
+func session(docs ...string) Principal {
+	p := principal(sigv4.Principal{
+		AccountID:    management,
+		ARN:          sessionARN,
+		PrincipalARN: roleARN,
+		UserID:       "AROAEXAMPLEROLEID0001:e2e",
+		Type:         sigv4.PrincipalTypeAssumedRole,
+		AccessKeyID:  "ASIAEXAMPLE",
+	})
+	for _, d := range docs {
+		p.Policies = append(p.Policies, json.RawMessage(d))
 	}
-	for arn, want := range map[string]string{
-		"arn:aws:sts::000000000000:assumed-role/r/s":    "arn:aws:iam::000000000000:role/r",
-		"arn:aws-cn:sts::000000000000:assumed-role/r/s": "arn:aws-cn:iam::000000000000:role/r",
-		"arn:aws:sts::000000000000:assumed-role/r":      "",
-		"arn:aws:sts::000000000000:assumed-role//s":     "",
-		"arn:aws:sts::000000000000:federated-user/x":    "",
-		"arn:aws:iam::000000000000:user/dev":            "",
-	} {
-		got, _ := sessionRoleARN(arn)
-		if got != want {
-			t.Errorf("sessionRoleARN(%q) = %q, want %q", arn, got, want)
-		}
+	return p
+}
+
+func taggedSession(tags map[string]string) Principal {
+	p := session()
+	p.Tags = tags
+	return p
+}
+
+func TestCallerOf(t *testing.T) {
+	got := CallerOf(session())
+	want := policy.Caller{
+		AccountID:    management,
+		ARN:          sessionARN,
+		PrincipalARN: roleARN,
+		UserID:       "AROAEXAMPLEROLEID0001:e2e",
+		Type:         policy.PrincipalTypeAssumedRole,
 	}
+	if got != want {
+		t.Fatalf("got  %+v\nwant %+v", got, want)
+	}
+}
+
+func TestPrincipalKeysReachConditions(t *testing.T) {
+	a := New(management)
+	for name, tc := range map[string]struct {
+		condition string
+		p         Principal
+	}{
+		"aws:PrincipalArn with the role's path": {
+			p:         session(),
+			condition: `{"ArnLike":{"aws:PrincipalArn":"arn:aws:iam::*:role/platform/*"}}`,
+		},
+		"aws:PrincipalArn of a user": {
+			p:         user(),
+			condition: `{"ArnEquals":{"aws:PrincipalArn":"` + userARN + `"}}`,
+		},
+		"aws:PrincipalAccount": {
+			p:         session(),
+			condition: `{"StringEquals":{"aws:PrincipalAccount":"` + management + `"}}`,
+		},
+		"aws:PrincipalType": {
+			p:         session(),
+			condition: `{"StringEquals":{"aws:PrincipalType":"AssumedRole"}}`,
+		},
+		"aws:userid": {
+			p:         session(),
+			condition: `{"StringLike":{"aws:userid":"AROAEXAMPLEROLEID0001:*"}}`,
+		},
+		"aws:username": {
+			p:         user(),
+			condition: `{"StringEquals":{"aws:username":"dev"}}`,
+		},
+		"aws:PrincipalTag": {
+			p:         taggedSession(map[string]string{"team": "ops"}),
+			condition: `{"StringEquals":{"aws:PrincipalTag/team":"ops"}}`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			deny := statement("Deny", "organizations:ListAccounts", "*", tc.condition)
+			tc.p.Policies = append(tc.p.Policies,
+				json.RawMessage(allow("organizations:ListAccounts", "*")),
+				json.RawMessage(deny))
+			err := a.Authorize(request(), tc.p, "organizations:ListAccounts",
+				[]Resource{{ARN: "*"}}, nil)
+			requireAccessDenied(t, err, "User: "+tc.p.ARN+" is not authorized to perform: "+
+				"organizations:ListAccounts on resource: * with an explicit deny in an "+
+				"identity-based policy")
+		})
+	}
+}
+
+func TestTheRequestCannotSetPrincipalKeys(t *testing.T) {
+	// An operation key named like a principal key does not replace the
+	// principal's: the Deny on the role path still applies.
+	p := session(allow("organizations:ListAccounts", "*"),
+		statement("Deny", "organizations:ListAccounts", "*",
+			`{"ArnLike":{"aws:PrincipalArn":"arn:aws:iam::*:role/platform/*"}}`))
+	err := New(management).Authorize(request(), p, "organizations:ListAccounts",
+		[]Resource{{ARN: "*"}},
+		map[string][]string{"aws:PrincipalArn": {"arn:aws:iam::000000000000:role/other"}})
+	requireAccessDenied(t, err, "User: "+sessionARN+" is not authorized to perform: "+
+		"organizations:ListAccounts on resource: * with an explicit deny in an "+
+		"identity-based policy")
+}
+
+func TestASessionWhoseRoleWasDeletedIsRefused(t *testing.T) {
+	p := session(allow("organizations:*", "*"))
+	p.PrincipalARN = ""
+	err := New(management).Authorize(request(), p, "organizations:ListAccounts",
+		[]Resource{{ARN: "*"}}, nil)
+	requireAccessDenied(t, err, "User: "+sessionARN+" is not authorized to perform: "+
+		"organizations:ListAccounts on resource: * because no identity-based policy "+
+		"allows the organizations:ListAccounts action")
+}
+
+func TestACallerWhoseFieldsDisagreeIsRefused(t *testing.T) {
+	for name, edit := range map[string]func(*Principal){
+		"no type":               func(p *Principal) { p.Type = "" },
+		"no unique ID":          func(p *Principal) { p.UserID = "" },
+		"another account's ARN": func(p *Principal) { p.AccountID = member },
+		"another role":          func(p *Principal) { p.PrincipalARN = "arn:aws:iam::000000000000:role/x" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := session(allow("organizations:*", "*"))
+			edit(&p)
+			err := New(management).Authorize(request(), p, "organizations:ListAccounts",
+				[]Resource{{ARN: "*"}}, nil)
+			requireAccessDenied(t, err, "User: "+sessionARN+" is not authorized to perform: "+
+				"organizations:ListAccounts on resource: * because no identity-based policy "+
+				"allows the organizations:ListAccounts action")
+		})
+	}
+}
+
+// memberSession is a session of OrganizationAccountAccessRole in a member
+// account, with AdministratorAccess.
+func memberSession() Principal {
+	const arn = "arn:aws:sts::111111111111:assumed-role/OrganizationAccountAccessRole/x"
+	return principal(sigv4.Principal{
+		AccountID:    member,
+		ARN:          arn,
+		PrincipalARN: "arn:aws:iam::111111111111:role/OrganizationAccountAccessRole",
+		UserID:       "AROAEXAMPLEROLEID0002:x",
+		Type:         sigv4.PrincipalTypeAssumedRole,
+		Policies:     []json.RawMessage{json.RawMessage(allow("*", "*"))},
+	})
+}
+
+func TestAnotherAccountNeedsAResourcePolicy(t *testing.T) {
+	p := memberSession()
+	err := New(management).Authorize(request(), p, "organizations:DescribeAccount",
+		[]Resource{{ARN: accountARN}}, nil)
+	requireAccessDenied(t, err, "User: "+p.ARN+" is not authorized to perform: "+
+		"organizations:DescribeAccount on resource: "+accountARN+
+		" because no resource-based policy allows the organizations:DescribeAccount action")
+}
+
+func TestInOwnAccountTheIdentityPoliciesDecide(t *testing.T) {
+	a := New(management)
+	p := memberSession()
+	if err := a.AuthorizeInOwnAccount(request(), p, "organizations:DescribeOrganization",
+		[]Resource{{ARN: "*"}}, nil); err != nil {
+		t.Fatalf("member session with an Allow: %v", err)
+	}
+	p.Policies = nil
+	err := a.AuthorizeInOwnAccount(request(), p, "organizations:DescribeOrganization",
+		[]Resource{{ARN: "*"}}, nil)
+	requireAccessDenied(t, err, "User: "+p.ARN+" is not authorized to perform: "+
+		"organizations:DescribeOrganization on resource: * because no identity-based "+
+		"policy allows the organizations:DescribeOrganization action")
 }

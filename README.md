@@ -109,6 +109,31 @@ a session's being its role's):
    deny in an identity-based policy`. `MoveAccount` is evaluated on the
    account and both parents, and the message names the first one refused.
 
+Evaluation is tule.dev/policy's `Authorize`, with no resource-based policy:
+Organizations' resource policy (`PutResourcePolicy`,
+`DescribeResourcePolicy`, `DeleteResourcePolicy`) is a delegation policy
+that "specifies which member accounts can perform actions on policies"
+("Create a resource-based delegation policy with AWS Organizations",
+Organizations User Guide). This service has no delegated administrators or
+Organizations policies, so resource policies are not served and none is
+ever evaluated. Within the management account, an identity-based Allow
+allows as before. `Authorize`
+also refuses, as `... because no identity-based policy allows the <action>
+action`, a principal whose identity fields disagree (account, ARN, role ARN,
+unique ID and type), and a role session whose role has been deleted, which
+identity reports with an empty role ARN. A principal of another account
+never reaches evaluation for an operation only the management account may
+call (rule 2); if it did, it would be refused `... because no
+resource-based policy allows the <action> action`.
+
+**Behavior change:** a role session's `aws:PrincipalArn` now carries the
+role's path, so a condition written against the path-less ARN, such as
+`ArnEquals` `arn:aws:iam::<account>:role/auditor` for a role at `/audit/`,
+no longer matches, and one written with the path now does. A session whose
+role has been deleted was already denied, since identity returns no
+policies for it; it is now refused by accounts itself, whatever policies
+come with it.
+
 **Breaking change:** a key identity issued with no policy allowing an
 action is now refused it. Keys that worked with no policies need one, such
 as `{"Effect":"Allow","Action":"organizations:*","Resource":"*"}`. A role
@@ -142,10 +167,14 @@ does not allow tagging on create, which may differ from AWS.
 
 The condition keys supplied are the global `aws:SourceIp` (the connection's
 address; `X-Forwarded-For` is not read), `aws:CurrentTime`, `aws:EpochTime`,
-`aws:SecureTransport`, `aws:PrincipalAccount`, `aws:PrincipalArn`,
-`aws:PrincipalType`, `aws:RequestedRegion` (always `us-east-1`,
+`aws:SecureTransport`, `aws:RequestedRegion` (always `us-east-1`,
 Organizations' endpoint region, whatever region a request is signed for,
-since this service accepts any) and, for an IAM user, `aws:username`; and the keys the
+since this service accepts any), the principal's `aws:PrincipalAccount`,
+`aws:PrincipalArn` (an IAM user's ARN, or a role session's role ARN with
+its path, such as `arn:aws:iam::<account>:role/audit/auditor`),
+`aws:userid`, `aws:PrincipalType`, `aws:PrincipalTag/<key>` (an IAM user's
+tags, or a role session's role and session tags) and, for an IAM user,
+`aws:username`, all from what identity returns for the key; and the keys the
 reference lists for the operations that this service has:
 `aws:ResourceTag/<key>` from each evaluated resource's tags, and
 `aws:RequestTag/<key>` and `aws:TagKeys` from `CreateAccount`'s,
@@ -154,14 +183,7 @@ reference lists for the operations that this service has:
 
 Known gaps in authorization:
 
-- For a role session, `aws:PrincipalArn` is the role's ARN without its path,
-  which the session ARN does not carry, where AWS gives the path. A policy
-  condition on a role ARN that includes a path, such as `ArnLike`
-  `aws:PrincipalArn` `arn:aws:iam::*:role/restricted/*`, does not match a
-  session, so a Deny written that way does not apply to sessions yet.
-- `aws:PrincipalTag/<key>` and `aws:userid` are not supplied: the
-  principal's tags and unique ID do not reach this service.
-  `organizations:PolicyType`, `organizations:ServicePrincipal` and the
+- `organizations:PolicyType`, `organizations:ServicePrincipal` and the
   transfer keys are not supplied, as nothing here has them.
 - An ID is held to its field's rule before evaluation, since only a valid ID
   makes an ARN, so for an evaluated principal a request with several faults
@@ -174,9 +196,12 @@ Known gaps in authorization:
 - An evaluated principal's `UntagResource` with more than 50 distinct keys
   is refused with `ConstraintViolationException` `MAX_TAG_LIMIT_EXCEEDED`,
   to bound the context evaluated; AWS documents no such limit.
-- Service control policies, permissions boundaries, session policies and
-  resource-based policies are not evaluated. Organizations' resource policy
-  operations are not served, so no resource-based policy is stored either.
+- Service control policies, permissions boundaries and session policies are
+  not evaluated. Resource-based policies are not served: Organizations'
+  resource policy operations are not routed, no resource policy is stored,
+  and none is evaluated.
+- `aws:PrincipalOrgID` and `aws:PrincipalOrgPaths` are not supplied, so a
+  condition on them never holds.
 - A principal of another account may call `DescribeOrganization` only
   while its account is an `ACTIVE` member, and is then evaluated against its
   own identity policies alone, as AWS lets any account in the organization

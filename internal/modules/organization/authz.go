@@ -510,7 +510,9 @@ func (m *Module) requireCallerAccount(
 }
 
 // authorizeActions evaluates the entry's action on resources and, for a
-// create carrying tags, tagAction on "*", with the same keys.
+// create carrying tags, tagAction on "*", with the same keys. An anyAccount
+// entry is evaluated within the caller's own account, which
+// requireCallerAccount has checked is a member.
 func (m *Module) authorizeActions(
 	r *http.Request,
 	p authz.Principal,
@@ -518,7 +520,11 @@ func (m *Module) authorizeActions(
 	resources []authz.Resource,
 	keys opKeys,
 ) error {
-	if err := m.authz.Authorize(r, p, entry.action, resources, keys); err != nil {
+	evaluate := m.authz.Authorize
+	if entry.anyAccount {
+		evaluate = m.authz.AuthorizeInOwnAccount
+	}
+	if err := evaluate(r, p, entry.action, resources, keys); err != nil {
 		return err
 	}
 	if entry.tagsOnCreate && len(keys["aws:TagKeys"]) > 0 {

@@ -139,20 +139,15 @@ func ErrService() *Error {
 			"Try again later.")
 }
 
-// ErrNotAllowed is the AccessDeniedException of a request no identity-based
-// policy allows, in the form of AWS's authorization messages ("Troubleshoot
-// access denied error messages", IAM User Guide). The API reference gives
-// AccessDeniedException the status 400.
-func ErrNotAllowed(callerARN, action, resource string) *Error {
-	return clientError(TypeAccessDenied, notAuthorized(callerARN, action, resource)+
-		" because no identity-based policy allows the "+action+" action")
-}
-
-// ErrExplicitlyDenied is the AccessDeniedException of a request an
-// identity-based policy denies, in the form of AWS's messages.
-func ErrExplicitlyDenied(callerARN, action, resource string) *Error {
-	return clientError(TypeAccessDenied, notAuthorized(callerARN, action, resource)+
-		" with an explicit deny in an identity-based policy")
+// ErrNotAuthorized is the AccessDeniedException of a request its policies do
+// not allow, in the form of AWS's authorization messages ("Troubleshoot
+// access denied error messages", IAM User Guide): "User: <caller> is not
+// authorized to perform: <action> on resource: <resource>" and because, the
+// phrase that says why, such as "because no identity-based policy allows the
+// <action> action" or "with an explicit deny in an identity-based policy".
+// The API reference gives AccessDeniedException the status 400.
+func ErrNotAuthorized(callerARN, action, resource, because string) *Error {
+	return clientError(TypeAccessDenied, notAuthorized(callerARN, action, resource)+" "+because)
 }
 
 func notAuthorized(callerARN, action, resource string) string {
