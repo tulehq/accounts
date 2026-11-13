@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	awsorg "github.com/aws/aws-sdk-go-v2/service/organizations"
 	"github.com/aws/aws-sdk-go-v2/service/organizations/types"
 	"github.com/aws/smithy-go"
@@ -188,6 +189,26 @@ func TestARequestSignedForAnyRegionIsServed(t *testing.T) {
 	requireAs[*types.AWSOrganizationsNotInUseException](t, err)
 }
 
+func TestASessionTokenIsRefused(t *testing.T) {
+	// The configured key is long-term and takes no session token, so a
+	// request that carries one is refused, as AWS refuses a token that is
+	// not the key's. UnrecognizedClientException is what the AWS JSON
+	// services answer an invalid token with.
+	srv := startServer(t, nil)
+	c := clientFor(srv, func(o *awsorg.Options) {
+		o.Credentials = credentials.NewStaticCredentialsProvider("test", "test", "token")
+		o.RetryMaxAttempts = 1
+	})
+
+	_, err := c.CreateOrganization(t.Context(), &awsorg.CreateOrganizationInput{})
+	requireCode(t, err, "UnrecognizedClientException")
+	requireMessage(t, err, "The security token included in the request is invalid.")
+	requireStatus(t, err, http.StatusForbidden)
+
+	_, err = clientFor(srv).DescribeOrganization(t.Context(), &awsorg.DescribeOrganizationInput{})
+	requireAs[*types.AWSOrganizationsNotInUseException](t, err)
+}
+
 // addHeaderAfterSigning sets a header on the request once the SDK has signed
 // it, so the signature does not cover it.
 func addHeaderAfterSigning(name, value string) func(*middleware.Stack) error {
@@ -289,6 +310,16 @@ func requireMessage(t *testing.T, err error, msg string) {
 	if apiErr.ErrorMessage() != msg {
 		t.Fatalf("message = %q, want %q", apiErr.ErrorMessage(), msg)
 	}
+}
+
+// requireStatus fails unless err came with the given HTTP status.
+func requireStatus(t *testing.T, err error, status int) {
+	t.Helper()
+	var respErr *smithyhttp.ResponseError
+	if !errors.As(err, &respErr) {
+		t.Fatalf("want an HTTP response error, got %v", err)
+	}
+	requireEqual(t, respErr.HTTPStatusCode(), status, "status")
 }
 
 func asAPIError(t *testing.T, err error) smithy.APIError {
