@@ -16,7 +16,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -110,15 +109,51 @@ func (a *Authorizer) IsRoot(p Principal) bool {
 }
 
 // Authorize evaluates p's identity policies for action on each of
-// resources, with the global condition keys of r and the operation's keys
-// in opKeys, and returns the AccessDeniedException of the first resource
-// they do not allow. The management account's root principal is allowed
-// without evaluation. A
+// resources, which are the management account's, with the global condition
+// keys of r and the operation's keys in opKeys, and returns the
+// AccessDeniedException of the first resource they do not allow. The
+// management account's root principal is allowed without evaluation. A
 // request for no resource is a fault, never an allow: every operation acts
 // on at least one, "*" included.
+//
+// Evaluation is policy.Authorize's, with no resource-based policy: this
+// service stores none (Organizations' resource policy is for delegated
+// administration, which is not served). Within the management account an
+// identity-based Allow allows, as policy.Evaluate decided before; a
+// principal of another account is denied with "because no resource-based
+// policy allows the <action> action" even when its identity policies allow
+// the action, since nothing can grant it. Callers keep such principals out
+// with RequireManagementAccount first, as Organizations does.
 func (a *Authorizer) Authorize(
 	r *http.Request,
 	p Principal,
+	action string,
+	resources []Resource,
+	opKeys map[string][]string,
+) error {
+	return a.authorize(r, p, a.managementAccountID, action, resources, opKeys)
+}
+
+// AuthorizeInOwnAccount is Authorize for an operation any account in the
+// organization may call, DescribeOrganization: the request is evaluated as
+// one within p's own account, so p's identity policies alone decide, as
+// Organizations lets "any account in the organization" call it with its
+// own permissions. The caller must have checked that p's account is a
+// member.
+func (a *Authorizer) AuthorizeInOwnAccount(
+	r *http.Request,
+	p Principal,
+	action string,
+	resources []Resource,
+	opKeys map[string][]string,
+) error {
+	return a.authorize(r, p, p.AccountID, action, resources, opKeys)
+}
+
+func (a *Authorizer) authorize(
+	r *http.Request,
+	p Principal,
+	resourceAccount string,
 	action string,
 	resources []Resource,
 	opKeys map[string][]string,
@@ -133,23 +168,38 @@ func (a *Authorizer) Authorize(
 	if err != nil {
 		return err
 	}
+	caller := CallerOf(p)
 	global := GlobalKeys(r, p, time.Now())
 	for _, res := range resources {
-		out := policy.Evaluate(policy.Request{
-			Action:    action,
-			Resource:  res.ARN,
-			Principal: p.ARN,
-			Context:   contextFor(global, opKeys, res),
-		}, policies...)
-		switch out.Decision {
-		case policy.Allow:
-		case policy.ExplicitDeny:
-			return orgapi.ErrExplicitlyDenied(p.ARN, action, res.ARN)
-		default:
-			return orgapi.ErrNotAllowed(p.ARN, action, res.ARN)
+		out := policy.Authorize(policy.AuthorizeRequest{
+			Action:          action,
+			Resource:        res.ARN,
+			ResourceAccount: resourceAccount,
+			Caller:          caller,
+			Context:         contextFor(global, opKeys, res),
+		}, nil, policies...)
+		if out.Decision != policy.Allow {
+			return orgapi.ErrNotAuthorized(p.ARN, action, res.ARN, out.Reason.Message(action))
 		}
 	}
 	return nil
+}
+
+// CallerOf is p as tule.dev/policy's Caller, from the fields identity's
+// keysource fills: the account, the ARN that signed, aws:PrincipalArn (a
+// role session's role ARN with its path, empty for a session whose role
+// was deleted), aws:userid and aws:PrincipalType. policy.Authorize supplies
+// aws:PrincipalArn, aws:PrincipalAccount, aws:userid, aws:PrincipalType and
+// aws:username from it, refuses a Caller whose fields disagree, and refuses
+// a session whose role was deleted.
+func CallerOf(p Principal) policy.Caller {
+	return policy.Caller{
+		AccountID:    p.AccountID,
+		ARN:          p.ARN,
+		PrincipalARN: p.PrincipalARN,
+		UserID:       p.UserID,
+		Type:         policy.PrincipalType(p.Type),
+	}
 }
 
 // contextFor is the request context evaluated for one resource: the global
@@ -221,89 +271,32 @@ func (a *Authorizer) cachedPolicies() int {
 
 // GlobalKeys are the global condition keys ("AWS global condition context
 // keys", IAM User Guide) this service supplies for a request by p at now,
-// which also fill the policy variables:
+// beside the principal's identity keys policy.Authorize supplies from
+// CallerOf, which also fill the policy variables:
 //
 //   - aws:SourceIp, the address the connection came from. Nothing is
 //     expected in front of this service, so X-Forwarded-For is not read.
 //   - aws:CurrentTime and aws:EpochTime.
 //   - aws:SecureTransport, whether the request came over TLS.
-//   - aws:PrincipalAccount, and aws:PrincipalArn: an IAM user's ARN, or for a
-//     role session the role's ARN, which AWS gives with the role's path.
-//     The path is not known here (the session ARN carries none), so the
-//     role ARN has none; a condition on a role path does not match.
-//   - aws:username, for an IAM user, and aws:PrincipalType.
 //   - aws:RequestedRegion, always Region, whatever region the request was
 //     signed for.
-//
-// aws:userid is left out, as the unique IDs it is made of are identity's
-// and do not reach this service; tule.dev/policy derives it for the root
-// user, which is never evaluated here anyway. aws:PrincipalTag is not
-// supplied either: the principal's tags do not reach this service.
+//   - aws:PrincipalTag/<key> for each of the principal's tags: an IAM
+//     user's, or a role session's role and session tags, as identity
+//     merges them. Identity keeps the keys unique regardless of case and at
+//     most 50.
 func GlobalKeys(r *http.Request, p Principal, now time.Time) map[string][]string {
 	now = now.UTC()
 	keys := map[string][]string{
-		"aws:CurrentTime":      {now.Format(time.RFC3339)},
-		"aws:EpochTime":        {strconv.FormatInt(now.Unix(), 10)},
-		"aws:SecureTransport":  {strconv.FormatBool(r.TLS != nil)},
-		"aws:PrincipalAccount": {p.AccountID},
-		"aws:RequestedRegion":  {Region},
+		"aws:CurrentTime":     {now.Format(time.RFC3339)},
+		"aws:EpochTime":       {strconv.FormatInt(now.Unix(), 10)},
+		"aws:SecureTransport": {strconv.FormatBool(r.TLS != nil)},
+		"aws:RequestedRegion": {Region},
 	}
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		keys["aws:SourceIp"] = []string{host}
 	}
-	if name, ok := userName(p.ARN); ok {
-		keys["aws:PrincipalArn"] = []string{p.ARN}
-		keys["aws:username"] = []string{name}
-		keys["aws:PrincipalType"] = []string{"User"}
-	} else if role, ok := sessionRoleARN(p.ARN); ok {
-		keys["aws:PrincipalArn"] = []string{role}
-		keys["aws:PrincipalType"] = []string{"AssumedRole"}
+	for k, v := range p.Tags {
+		keys["aws:PrincipalTag/"+k] = []string{v}
 	}
 	return keys
-}
-
-// userName returns the user name of an IAM user ARN,
-// arn:PARTITION:iam::ACCOUNT:user/PATH/NAME: its last path segment.
-func userName(arn string) (string, bool) {
-	resource, ok := resourceOf(arn, "iam")
-	if !ok {
-		return "", false
-	}
-	path, ok := strings.CutPrefix(resource, "user/")
-	if !ok {
-		return "", false
-	}
-	name := path[strings.LastIndex(path, "/")+1:]
-	return name, name != ""
-}
-
-// sessionRoleARN returns the role ARN of an assumed-role session ARN,
-// arn:PARTITION:sts::ACCOUNT:assumed-role/ROLE/SESSION, without the role's
-// path, which the session ARN does not carry.
-func sessionRoleARN(arn string) (string, bool) {
-	resource, ok := resourceOf(arn, "sts")
-	if !ok {
-		return "", false
-	}
-	rest, ok := strings.CutPrefix(resource, "assumed-role/")
-	if !ok {
-		return "", false
-	}
-	role, session, ok := strings.Cut(rest, "/")
-	if !ok || role == "" || session == "" {
-		return "", false
-	}
-	fields := strings.SplitN(arn, ":", 6)
-	return "arn:" + fields[1] + ":iam::" + fields[4] + ":role/" + role, true
-}
-
-// resourceOf returns the resource field of an ARN of service with no
-// region, as IAM and STS ARNs have none.
-func resourceOf(arn, service string) (string, bool) {
-	fields := strings.SplitN(arn, ":", 6)
-	if len(fields) != 6 || fields[0] != "arn" || fields[1] == "" || fields[2] != service ||
-		fields[3] != "" || fields[4] == "" {
-		return "", false
-	}
-	return fields[5], true
 }
