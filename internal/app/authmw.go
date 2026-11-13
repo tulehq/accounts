@@ -3,7 +3,9 @@ package app
 import (
 	"fmt"
 	"net/http"
+	"time"
 
+	"tule.dev/identity/keysource"
 	"tule.dev/sigv4"
 
 	"tule.dev/accounts/internal/modules/health"
@@ -15,15 +17,24 @@ import (
 // with 50 tags, a few tens of KiB at most, so this leaves ample room.
 const maxBodySize = 1 << 20
 
+// identityTimeout bounds a key lookup at identity, so an identity that hangs
+// fails the request with ServiceException rather than holding it until the
+// server's own timeout. A lookup is one small local request. It is a
+// variable so a test can shorten it.
+var identityTimeout = 10 * time.Second
+
 // newVerifier returns the SigV4 verifier every request but the probes goes
-// through. It knows the one configured access key, belonging to the
-// management account's root user, signed for organizations in any region.
-// Host, X-Amz-Date and X-Amz-Target must be signed: X-Amz-Target names the
+// through. It knows the configured root key, belonging to the management
+// account's root user, and, when an identity endpoint is configured, every
+// key identity issued, asked of identity on each request after the root key.
+// Any key it accepts may call every operation: there are no permissions.
+// Requests are accepted signed for organizations in any region. Host,
+// X-Amz-Date and X-Amz-Target must be signed: X-Amz-Target names the
 // operation, and left unsigned it would let whoever relays a signed read
 // turn it into a removal, since the two carry the same body.
 func newVerifier(cfg *Config) (*sigv4.Verifier, error) {
 	account := cfg.Organization.ManagementAccountID
-	keys, err := sigv4.NewStaticKey(sigv4.StaticKeyConfig{
+	root, err := sigv4.NewStaticKey(sigv4.StaticKeyConfig{
 		AccessKeyID:     cfg.Auth.AccessKeyID,
 		SecretAccessKey: cfg.Auth.SecretAccessKey,
 		AccountID:       account,
@@ -31,6 +42,19 @@ func newVerifier(cfg *Config) (*sigv4.Verifier, error) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to build the signature verifier: %w", err)
+	}
+	var keys sigv4.KeySource = root
+	if cfg.Auth.IdentityEndpoint != "" {
+		identity, kErr := keysource.New(keysource.Config{
+			HTTPClient:      &http.Client{Timeout: identityTimeout},
+			Endpoint:        cfg.Auth.IdentityEndpoint,
+			AccessKeyID:     cfg.Auth.AccessKeyID,
+			SecretAccessKey: cfg.Auth.SecretAccessKey,
+		})
+		if kErr != nil {
+			return nil, fmt.Errorf("failed to build the signature verifier: %w", kErr)
+		}
+		keys = sigv4.Chain(root, identity)
 	}
 	v, err := sigv4.New(
 		keys,

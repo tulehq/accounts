@@ -197,3 +197,36 @@ func TestZeroReadTimeoutStarts(t *testing.T) {
 		t.Fatalf("read timeout = %s, want 0", got)
 	}
 }
+
+func TestLoadConfigLeavesTheIdentityEndpointUnset(t *testing.T) {
+	// Unset, accounts runs standalone on the root key alone.
+	cfg, err := loadEnvConfig(t, "AKID", "secret")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Auth.IdentityEndpoint != "" {
+		t.Fatalf("default identity endpoint = %q, want empty", cfg.Auth.IdentityEndpoint)
+	}
+}
+
+func TestLoadConfigReadsTheIdentityEndpoint(t *testing.T) {
+	t.Setenv("TULE_Auth_IdentityEndpoint", "http://127.0.0.1:9030")
+	cfg, err := loadEnvConfig(t, "AKID", "secret")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Auth.IdentityEndpoint != "http://127.0.0.1:9030" {
+		t.Fatalf("identity endpoint = %q", cfg.Auth.IdentityEndpoint)
+	}
+}
+
+func TestLoadConfigChecksTheIdentityEndpoint(t *testing.T) {
+	for _, value := range []string{"localhost:9030", "http://", "ftp://localhost:9030", "/identity"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("TULE_Auth_IdentityEndpoint", value)
+			if _, err := loadEnvConfig(t, "AKID", "secret"); err == nil {
+				t.Fatalf("load config with identity endpoint %q succeeded", value)
+			}
+		})
+	}
+}
