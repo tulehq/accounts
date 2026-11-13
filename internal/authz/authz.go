@@ -76,7 +76,22 @@ func Caller(r *http.Request) (Principal, error) {
 	if !ok {
 		return Principal{}, fmt.Errorf("authz: the request carries no verified principal")
 	}
+	if err := checkRoot(Principal{Principal: p}); err != nil {
+		return Principal{}, err
+	}
 	return Principal{Principal: p}, nil
+}
+
+// checkRoot fails when p's Root and Type disagree: Root skips evaluation
+// here, while policy.Authorize grants full access to a Type of Account, so
+// a principal that is one but not the other would be root to one and not
+// the other. The keysource and the static key always set both together, so
+// a principal that does not is a fault.
+func checkRoot(p Principal) error {
+	if p.Root != (p.Type == sigv4.PrincipalTypeAccount) {
+		return fmt.Errorf("authz: principal %s has Root %t but type %q", p.ARN, p.Root, p.Type)
+	}
+	return nil
 }
 
 // RequireManagementAccount refuses a principal of any account but the
@@ -158,6 +173,9 @@ func (a *Authorizer) authorize(
 	resources []Resource,
 	opKeys map[string][]string,
 ) error {
+	if err := checkRoot(p); err != nil {
+		return err
+	}
 	if a.IsRoot(p) {
 		return nil
 	}

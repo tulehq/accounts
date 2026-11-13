@@ -203,12 +203,22 @@ func TestSourceIPIsHonored(t *testing.T) {
 	}
 }
 
-func TestTheRootPrincipalIsNotEvaluated(t *testing.T) {
-	root := principal(sigv4.Principal{
-		AccountID: management,
-		ARN:       "arn:aws:iam::000000000000:root",
-		Root:      true,
+// rootOf is an account's root user as identity's keysource and the static
+// key give it.
+func rootOf(account string) Principal {
+	arn := "arn:aws:iam::" + account + ":root"
+	return principal(sigv4.Principal{
+		AccountID:    account,
+		ARN:          arn,
+		PrincipalARN: arn,
+		UserID:       account,
+		Type:         sigv4.PrincipalTypeAccount,
+		Root:         true,
 	})
+}
+
+func TestTheRootPrincipalIsNotEvaluated(t *testing.T) {
+	root := rootOf(management)
 	a := New(management)
 	if err := a.Authorize(request(), root, "organizations:DeleteOrganization",
 		[]Resource{{ARN: "*"}}, nil); err != nil {
@@ -218,17 +228,50 @@ func TestTheRootPrincipalIsNotEvaluated(t *testing.T) {
 		t.Fatal("the management account's root is not root")
 	}
 
-	// Root of another account is not this service's root.
-	root.AccountID = "111111111111"
-	root.ARN = "arn:aws:iam::111111111111:root"
-	if a.IsRoot(root) {
+	// Root of another account is not this service's root: it is evaluated
+	// as a caller of another account, which needs a resource-based policy.
+	other := rootOf(member)
+	if a.IsRoot(other) {
 		t.Fatal("the root of another account is root here")
 	}
-	requireAccessDenied(t, a.RequireManagementAccount(root),
+	requireAccessDenied(t, a.RequireManagementAccount(other),
 		"You don't have permissions to access this resource.")
-	if err := a.Authorize(request(), root, "organizations:DeleteOrganization",
-		[]Resource{{ARN: "*"}}, nil); err == nil {
-		t.Fatal("the root of another account skipped evaluation")
+	err := a.Authorize(request(), other, "organizations:DeleteOrganization",
+		[]Resource{{ARN: "*"}}, nil)
+	requireAccessDenied(t, err, "User: "+other.ARN+" is not authorized to perform: "+
+		"organizations:DeleteOrganization on resource: * because no resource-based "+
+		"policy allows the organizations:DeleteOrganization action")
+}
+
+func TestAMemberAccountsRootMayDescribeTheOrganization(t *testing.T) {
+	if err := New(management).AuthorizeInOwnAccount(request(), rootOf(member),
+		"organizations:DescribeOrganization", []Resource{{ARN: "*"}}, nil); err != nil {
+		t.Fatalf("member root: %v", err)
+	}
+}
+
+func TestRootAndTypeOutOfStepIsAFault(t *testing.T) {
+	notRoot := rootOf(management)
+	notRoot.Root = false
+	rootUser := user(allow("organizations:*", "*"))
+	rootUser.Root = true
+	for name, p := range map[string]Principal{
+		"type Account without Root": notRoot,
+		"Root with type User":       rootUser,
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := New(management).Authorize(request(), p, "organizations:ListAccounts",
+				[]Resource{{ARN: "*"}}, nil)
+			var e *orgapi.Error
+			if err == nil || errors.As(err, &e) {
+				t.Fatalf("got %v, want a plain error, a ServiceException", err)
+			}
+			r := request()
+			r = r.WithContext(sigv4.NewContext(r.Context(), p.Principal))
+			if _, err = Caller(r); err == nil || errors.As(err, &e) {
+				t.Fatalf("Caller: got %v, want a plain error", err)
+			}
+		})
 	}
 }
 
@@ -250,7 +293,7 @@ func TestADocumentThatDoesNotParseIsAFault(t *testing.T) {
 		"organizations:ListAccounts", []Resource{{ARN: "*"}}, nil)
 	var e *orgapi.Error
 	if err == nil || errors.As(err, &e) {
-		t.Fatalf("got %v, want a plain error the dispatcher answers as ServiceException", err)
+		t.Fatalf("got %v, want a plain error, a ServiceException", err)
 	}
 }
 
