@@ -6,8 +6,10 @@ development and end-to-end tests: point an AWS SDK at it and the usual
 organization, account, OU and tag calls work.
 
 It is not a production account service. No AWS account exists behind any ID
-it hands out, there are no policies, and the one access key it accepts acts as
-the management account's root user.
+it hands out, there are no policies, and every access key it accepts acts on
+the one organization: the configured key, the management account's root
+user's, and, when it is pointed at [identity](https://github.com/tulehq/identity),
+every key identity issued.
 
 ## Running it
 
@@ -55,6 +57,7 @@ Settings come from environment variables prefixed with `TULE_`, and from a
 | `TULE_Server_ShutdownTimeout` | `7s` | How long a graceful shutdown waits for in-flight requests |
 | `TULE_Auth_AccessKeyID` | required | The access key clients sign requests with |
 | `TULE_Auth_SecretAccessKey` | required | Its secret |
+| `TULE_Auth_IdentityEndpoint` | unset | The identity service's base URL, such as `http://localhost:9030`: an absolute http or https URL. Set, the keys identity issued are accepted as well as the configured key, and identity is asked about them with the configured key, which must be identity's root key. Unset, accounts runs standalone on the configured key alone |
 | `TULE_GasEnv` | | `development` logs console output at trace level, `production` logs at warn level, `testing` disables logging |
 
 The read and write timeouts are sized for a signed request body of up to 1 MiB,
@@ -64,6 +67,14 @@ is no log shipping.
 The server refuses to start without an access key, because every request is
 verified against it and any web page the developer has open can reach a server
 on localhost. It also refuses a management account AWS would not accept.
+
+With an identity endpoint, a request signed with any key but the configured
+one is verified through identity's signing-key endpoint, on every request:
+a key identity deactivates or deletes is refused on the next one. A request
+signed with the configured key never asks identity. When identity cannot be
+asked, fails, or gives no answer within 10 seconds, a request signed with
+another key fails with `500` `ServiceException`, never as an unknown key,
+and the configured key keeps working.
 
 The management account is configured, not created. `CreateOrganization` makes
 it the management account and the first member of the new organization, in
@@ -166,10 +177,14 @@ paginators work.
   moves the account straight to `State` `CLOSED`, never through
   `PENDING_CLOSURE`. A closed account stays in the
   organization for good: nothing removes it after AWS's 90 days.
-- **One access key, and it is the management account.** There is no IAM, so
-  no request is ever refused with `AccessDeniedException`, and nothing here
-  tells you whether a deployment's permissions are right. There are no member
-  account credentials and no delegated administrators.
+- **Every accepted key may call every operation.** There are no permissions,
+  so no request is ever refused with `AccessDeniedException`, and nothing here
+  tells you whether a deployment's permissions are right. Standalone, the one
+  configured key is the management account's root user. With identity, any
+  key identity issued, an IAM user's or a role session's in a member account
+  included, acts on the one organization with every Organizations operation,
+  where AWS lets only the management account's principals call them. There
+  are no delegated administrators.
 - **One organization.** The service holds at most one, around the configured
   management account, which is not checked the way AWS checks an account
   before it may create an organization.
@@ -237,9 +252,12 @@ paginators work.
 - **The credential's region is not checked.** It is signed, but any region
   verifies: Organizations is global behind `us-east-1`, and local clients are
   set up for whatever region they work in.
-- **Session tokens are refused.** The one configured key is long-term, so a
-  request signed with temporary credentials, carrying `X-Amz-Security-Token`,
-  fails with `UnrecognizedClientException`.
+- **Session tokens need identity.** The configured key is long-term, so a
+  request signed with it and carrying `X-Amz-Security-Token` fails with
+  `UnrecognizedClientException`. With identity, a role session's key verifies
+  with its token; a token that is not the session's fails with
+  `UnrecognizedClientException`, and an expired one with
+  `ExpiredTokenException`.
 - **One process per database.** The store is one SQLite file reached through
   one connection, which serializes the server's own transactions; nothing
   coordinates two servers pointed at the same file.
@@ -257,6 +275,12 @@ make image      # build ghcr.io/tulehq/accounts:dev
 make smoke      # build the image, run it, and check it serves signed requests
 make push VERSION=0.1.0   # build for amd64 and arm64 and push
 ```
+
+The end-to-end tests include one against a real identity service, built
+from an identity checkout and run as a process pointed back at the app under
+test. The checkout is identity's sibling, `../identity`, by default, or the
+directory `TULE_E2E_IDENTITY_DIR` names; CI checks out `tulehq/identity` and
+sets it. Without a checkout that test fails rather than being skipped.
 
 ## License
 
