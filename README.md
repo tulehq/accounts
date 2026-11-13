@@ -437,7 +437,8 @@ make push VERSION=0.1.0   # build for amd64 and arm64 and push
 
 The end-to-end tests include ones against a real identity service, built
 from an identity checkout and run as a process pointed back at the app under
-test: identity-issued keys, and their policies enforced. The checkout is identity's sibling, `../identity`, by default, or the
+test: identity-issued keys, their policies enforced, and the organization
+keys identity learns from this service. The checkout is identity's sibling, `../identity`, by default, or the
 directory `TULE_E2E_IDENTITY_DIR` names; CI checks out `tulehq/identity` at v0.5.0 and
 sets it. Without a checkout that test fails rather than being skipped.
 
