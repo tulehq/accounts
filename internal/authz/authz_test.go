@@ -526,3 +526,127 @@ func TestInOwnAccountTheIdentityPoliciesDecide(t *testing.T) {
 		"organizations:DescribeOrganization on resource: * because no identity-based "+
 		"policy allows the organizations:DescribeOrganization action")
 }
+
+const (
+	orgID   = "o-abcdefghij"
+	orgPath = "o-abcdefghij/r-abcd/ou-abcd-12345678/"
+)
+
+func inOrganization(p Principal) Principal {
+	p.OrgID = orgID
+	p.OrgPaths = []string{orgPath}
+	return p
+}
+
+func orgUnknown(p Principal) Principal {
+	p.OrgUnknown = true
+	return p
+}
+
+func TestGlobalKeysOfTheOrganization(t *testing.T) {
+	now := time.Now()
+	t.Run("a member", func(t *testing.T) {
+		got := GlobalKeys(request(), inOrganization(user()), now)
+		if !reflect.DeepEqual(got["aws:PrincipalOrgID"], []string{orgID}) ||
+			!reflect.DeepEqual(got["aws:PrincipalOrgPaths"], []string{orgPath}) {
+			t.Fatalf("got aws:PrincipalOrgID %v, aws:PrincipalOrgPaths %v",
+				got["aws:PrincipalOrgID"], got["aws:PrincipalOrgPaths"])
+		}
+	})
+	for name, p := range map[string]Principal{
+		"no organization": user(),
+		"unknown":         orgUnknown(user()),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := GlobalKeys(request(), p, now)
+			for _, k := range []string{"aws:PrincipalOrgID", "aws:PrincipalOrgPaths"} {
+				if v, ok := got[k]; ok {
+					t.Fatalf("%s = %v, want it absent", k, v)
+				}
+			}
+		})
+	}
+}
+
+// TestOrganizationKeysReachConditions evaluates an Allow and a Deny on each
+// organization key for a principal in the organization, in none, and whose
+// organization identity could not tell. An unknown key never helps an
+// Allow, negated or not, and always lets a Deny apply; absent, a negated
+// Allow would grant and a positive Deny would lapse.
+func TestOrganizationKeysReachConditions(t *testing.T) {
+	const action = "organizations:ListAccounts"
+	conditions := map[string]string{
+		"aws:PrincipalOrgID equals": `{"StringEquals":{"aws:PrincipalOrgID":"` + orgID + `"}}`,
+		"aws:PrincipalOrgID not equals": `{"StringNotEquals":{"aws:PrincipalOrgID":"` +
+			orgID + `"}}`,
+		"aws:PrincipalOrgPaths like": `{"ForAnyValue:StringLike":{"aws:PrincipalOrgPaths":"` +
+			orgID + `/r-abcd/ou-abcd-12345678/*"}}`,
+		"aws:PrincipalOrgPaths not like": `{"ForAllValues:StringNotLike":` +
+			`{"aws:PrincipalOrgPaths":"` + orgID + `/r-abcd/ou-abcd-12345678/*"}}`,
+	}
+	// holds names the conditions that hold for a principal whose keys are
+	// known: an Allow with one allows, and a Deny with one beside an
+	// unconditional Allow denies. For unknown keys every Allow is refused
+	// and every Deny applies.
+	for _, tc := range []struct {
+		holds   map[string]bool
+		name    string
+		p       Principal
+		unknown bool
+	}{
+		{name: "in the organization", p: inOrganization(user()), holds: map[string]bool{
+			"aws:PrincipalOrgID equals": true, "aws:PrincipalOrgPaths like": true,
+		}},
+		{name: "in no organization", p: user(), holds: map[string]bool{
+			"aws:PrincipalOrgID not equals": true, "aws:PrincipalOrgPaths not like": true,
+		}},
+		{name: "unknown", p: orgUnknown(user()), unknown: true},
+	} {
+		for cname, cond := range conditions {
+			t.Run(tc.name+"/"+cname+"/Allow", func(t *testing.T) {
+				p := tc.p
+				p.Policies = []json.RawMessage{
+					json.RawMessage(statement("Allow", action, "*", cond)),
+				}
+				err := New(management).Authorize(request(), p, action, []Resource{{ARN: "*"}}, nil)
+				if tc.holds[cname] {
+					if err != nil {
+						t.Fatalf("want allowed, got %v", err)
+					}
+					return
+				}
+				requireAccessDenied(t, err, "User: "+userARN+" is not authorized to perform: "+
+					action+" on resource: * because no identity-based policy allows the "+
+					action+" action")
+			})
+			t.Run(tc.name+"/"+cname+"/Deny", func(t *testing.T) {
+				p := tc.p
+				p.Policies = []json.RawMessage{
+					json.RawMessage(allow(action, "*")),
+					json.RawMessage(statement("Deny", action, "*", cond)),
+				}
+				err := New(management).Authorize(request(), p, action, []Resource{{ARN: "*"}}, nil)
+				if !tc.unknown && !tc.holds[cname] {
+					if err != nil {
+						t.Fatalf("want allowed, got %v", err)
+					}
+					return
+				}
+				requireAccessDenied(t, err, "User: "+userARN+" is not authorized to perform: "+
+					action+" on resource: * with an explicit deny in an identity-based policy")
+			})
+		}
+	}
+}
+
+func TestUnknownOrganizationKeysInOwnAccount(t *testing.T) {
+	p := orgUnknown(memberSession())
+	p.Policies = []json.RawMessage{json.RawMessage(statement("Allow",
+		"organizations:DescribeOrganization", "*",
+		`{"StringNotEquals":{"aws:PrincipalOrgID":"o-zzzzzzzzzz"}}`))}
+	err := New(management).AuthorizeInOwnAccount(request(), p,
+		"organizations:DescribeOrganization", []Resource{{ARN: "*"}}, nil)
+	requireAccessDenied(t, err, "User: "+p.ARN+" is not authorized to perform: "+
+		"organizations:DescribeOrganization on resource: * because no identity-based "+
+		"policy allows the organizations:DescribeOrganization action")
+}

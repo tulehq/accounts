@@ -175,13 +175,30 @@ since this service accepts any), the principal's `aws:PrincipalAccount`,
 its path, such as `arn:aws:iam::<account>:role/audit/auditor`),
 `aws:userid`, `aws:PrincipalType`, `aws:PrincipalTag/<key>` (an IAM user's
 tags, or a role session's role's tags, since identity issues no session
-tags) and, for an IAM user,
-`aws:username`, all from what identity returns for the key; and the keys the
+tags), `aws:PrincipalOrgID` and `aws:PrincipalOrgPaths` and, for an IAM
+user, `aws:username`, all from what identity returns for the key; and the keys the
 reference lists for the operations that this service has:
 `aws:ResourceTag/<key>` from each evaluated resource's tags, and
 `aws:RequestTag/<key>` and `aws:TagKeys` from `CreateAccount`'s,
 `CreateOrganizationalUnit`'s and `TagResource`'s tags and `UntagResource`'s
 `TagKeys`.
+
+`aws:PrincipalOrgID` and `aws:PrincipalOrgPaths` are supplied as identity
+reports them: for a principal whose account is the management account or an
+`ACTIVE` member, the organization's ID and the account's one path, such as
+`o-a1b2c3d4e5/r-ab12/ou-ab12-11111111/`, and neither for any other. Identity
+learns them from this service and keeps an account's for 30 seconds, so a
+move, a removal or a deleted organization reaches conditions up to 30
+seconds late. When identity could not ask this service, both keys are
+evaluated as unknown, with tule.dev/policy's unknown keys, never as absent:
+a condition on either never holds in an `Allow` and always holds in a
+`Deny`, whatever its operator, so `StringNotEquals` on `aws:PrincipalOrgID`
+grants nothing and a `Deny` on it applies. A request whose policies do not
+test them is decided as usual.
+
+Identity asks this service with the root user's key, which this service
+checks first and never evaluates, so its own lookups need neither identity
+nor the organization keys.
 
 Known gaps in authorization:
 
@@ -202,10 +219,6 @@ Known gaps in authorization:
   not evaluated. Resource-based policies are not served: Organizations'
   resource policy operations are not routed, no resource policy is stored,
   and none is evaluated.
-- `aws:PrincipalOrgID` and `aws:PrincipalOrgPaths` are not supplied. A
-  positive condition on them, such as `StringEquals`, never holds, and a
-  negated one, such as `StringNotEquals`, always holds, so a Deny with a
-  negated operator on them denies every evaluated principal.
 - A principal of another account may call `DescribeOrganization` only
   while its account is an `ACTIVE` member, and is then evaluated against its
   own identity policies alone, as AWS lets any account in the organization

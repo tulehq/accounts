@@ -195,6 +195,7 @@ func (a *Authorizer) authorize(
 			ResourceAccount: resourceAccount,
 			Caller:          caller,
 			Context:         contextFor(global, opKeys, res),
+			Unknown:         unknownKeys(p),
 		}, nil, policies...)
 		if out.Decision != policy.Allow {
 			return orgapi.ErrNotAuthorized(p.ARN, action, res.ARN, out.Reason.Message(action))
@@ -302,6 +303,11 @@ func (a *Authorizer) cachedPolicies() int {
 //     user's, or a role session's role's (identity issues no session
 //     tags). Identity keeps the keys unique regardless of case and at
 //     most 50.
+//   - aws:PrincipalOrgID and aws:PrincipalOrgPaths, when identity reports
+//     the principal's account in the organization: AWS includes them
+//     "only if the principal is a member of an organization", the
+//     management account included. When identity could not tell, they are
+//     in unknownKeys instead, never absent.
 func GlobalKeys(r *http.Request, p Principal, now time.Time) map[string][]string {
 	now = now.UTC()
 	keys := map[string][]string{
@@ -316,5 +322,28 @@ func GlobalKeys(r *http.Request, p Principal, now time.Time) map[string][]string
 	for k, v := range p.Tags {
 		keys["aws:PrincipalTag/"+k] = []string{v}
 	}
+	if p.OrgID != "" {
+		keys[orgIDKey] = []string{p.OrgID}
+		keys[orgPathsKey] = p.OrgPaths
+	}
 	return keys
+}
+
+const (
+	orgIDKey    = "aws:PrincipalOrgID"
+	orgPathsKey = "aws:PrincipalOrgPaths"
+)
+
+// unknownKeys are the condition keys whose values p's request is evaluated
+// without, as tule.dev/policy's unknown keys: aws:PrincipalOrgID and
+// aws:PrincipalOrgPaths when identity could not ask the accounts service
+// for p's organization. Passed as absent, a negated condition on them,
+// such as StringNotEquals, would hold, so an Allow written with one would
+// grant and a Deny written with a positive one would lapse; unknown, a
+// condition on them never holds in an Allow and always holds in a Deny.
+func unknownKeys(p Principal) []string {
+	if p.OrgUnknown {
+		return []string{orgIDKey, orgPathsKey}
+	}
+	return nil
 }
