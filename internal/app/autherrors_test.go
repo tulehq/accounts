@@ -29,6 +29,7 @@ func TestSigv4ErrorMapsEveryKindTheVerifierReturns(t *testing.T) {
 		{orgapi.TypeInvalidSignature, sigv4.KindWrongService, http.StatusForbidden},
 		{orgapi.TypeUnrecognizedClient, sigv4.KindUnknownAccessKey, http.StatusForbidden},
 		{orgapi.TypeUnrecognizedClient, sigv4.KindInvalidSessionToken, http.StatusForbidden},
+		{orgapi.TypeExpiredToken, sigv4.KindExpiredSessionToken, http.StatusForbidden},
 		{orgapi.TypeInvalidInput, sigv4.KindPayloadHashMismatch, http.StatusBadRequest},
 		{orgapi.TypeInvalidInput, sigv4.KindBodyUnreadable, http.StatusBadRequest},
 		{orgapi.TypeInvalidInput, sigv4.KindBodyTooLarge, http.StatusRequestEntityTooLarge},
@@ -59,7 +60,6 @@ func TestSigv4ErrorLeavesTheRestToServiceException(t *testing.T) {
 	// ServiceException and logs.
 	for _, kind := range []sigv4.Kind{
 		sigv4.KindKeyLookupFailed,
-		sigv4.KindExpiredSessionToken,
 		sigv4.KindInvalidExpires,
 		sigv4.KindExpired,
 		sigv4.KindRequestNotYetValid,

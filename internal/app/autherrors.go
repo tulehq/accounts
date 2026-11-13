@@ -12,11 +12,12 @@ import (
 // answered with. The messages are the verifier's own, the AWS JSON services'
 // texts.
 //
-// Kinds this configuration cannot produce (presigned URLs, a streamed body,
-// session tokens a KeySource reports expired) and KindKeyLookupFailed are
-// returned as the *sigv4.Error itself: orgapi answers any error it does not
-// know with ServiceException and logs it, so they surface as a 500 with
-// their cause in the log.
+// KindExpiredSessionToken cannot occur with the static key, but is mapped
+// for keys with session tokens that a KeySource may hand out later. The
+// Kinds this configuration cannot produce (presigned URLs, a streamed body)
+// and KindKeyLookupFailed are returned as the *sigv4.Error itself: orgapi
+// answers any error it does not know with ServiceException and logs it, so
+// they surface as a 500 with their cause in the log.
 func sigv4Error(e *sigv4.Error) error {
 	switch e.Kind {
 	case sigv4.KindMissingAuth:
@@ -29,6 +30,8 @@ func sigv4Error(e *sigv4.Error) error {
 		return orgapi.NewError(http.StatusForbidden, orgapi.TypeInvalidSignature, e.Message)
 	case sigv4.KindUnknownAccessKey, sigv4.KindInvalidSessionToken:
 		return orgapi.NewError(http.StatusForbidden, orgapi.TypeUnrecognizedClient, e.Message)
+	case sigv4.KindExpiredSessionToken:
+		return orgapi.NewError(http.StatusForbidden, orgapi.TypeExpiredToken, e.Message)
 	case sigv4.KindPayloadHashMismatch, sigv4.KindBodyUnreadable:
 		return orgapi.ErrInvalidInput(e.Message)
 	case sigv4.KindBodyTooLarge:
