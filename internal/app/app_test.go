@@ -189,3 +189,21 @@ func setTarget(target string) func(*middleware.Stack) error {
 		), middleware.Before)
 	}
 }
+
+func TestTheStaticKeyIsRootUnderAConfiguredAccount(t *testing.T) {
+	t.Setenv("TULE_Organization_ManagementAccountID", "123456789012")
+	c := startApp(t, t.TempDir())
+
+	out, err := c.CreateOrganization(context.Background(),
+		&organizations.CreateOrganizationInput{})
+	if err != nil {
+		t.Fatalf("create organization: %v", err)
+	}
+	if got := aws.ToString(out.Organization.MasterAccountId); got != "123456789012" {
+		t.Fatalf("management account = %s", got)
+	}
+	if _, err = c.ListAccounts(context.Background(),
+		&organizations.ListAccountsInput{}); err != nil {
+		t.Fatalf("list accounts with the static key: %v", err)
+	}
+}

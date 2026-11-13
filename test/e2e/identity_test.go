@@ -59,7 +59,9 @@ type identityStack struct {
 
 func TestIdentityIssuedKeys(t *testing.T) {
 	s := startIdentityStack(t)
+	// An identity-issued key is held to its policies, so the IAM user needs one.
 	user := orgClientWith(s.srv, createUserKey(t, s.iam, "dev"))
+	putUserPolicy(t, s.iam, "dev", allowDoc("organizations:*", "*"))
 
 	t.Run("a user key calls Organizations", func(t *testing.T) {
 		_, err := user.CreateOrganization(t.Context(), &awsorg.CreateOrganizationInput{})
@@ -129,6 +131,7 @@ func (s *identityStack) testInactiveKey(t *testing.T) {
 
 func (s *identityStack) testDeletedKey(t *testing.T) {
 	key := createUserKey(t, s.iam, "deleted")
+	putUserPolicy(t, s.iam, "deleted", allowDoc("organizations:DescribeOrganization", "*"))
 	c := orgClientWith(s.srv, key)
 	_, err := c.DescribeOrganization(t.Context(), &awsorg.DescribeOrganizationInput{})
 	requireNoErr(t, err, "describe organization before the key is deleted")
@@ -144,22 +147,17 @@ func (s *identityStack) testDeletedKey(t *testing.T) {
 
 // testRoleSession assumes the organization role in a new member account
 // through identity, as the root user, and calls accounts with the session.
+// The role has AdministratorAccess, but a member account may only describe
+// the organization.
 func (s *identityStack) testRoleSession(t *testing.T) {
 	member := createAccountID(t, s.root, "Member", "member@example.com")
+	session := s.organizationRoleSession(t, member)
 
-	out, err := stsClient(s.identityURL, s.rootCreds).AssumeRole(t.Context(), &sts.AssumeRoleInput{
-		RoleArn:         aws.String("arn:aws:iam::" + member + ":role/" + organizationRole),
-		RoleSessionName: aws.String("e2e"),
-	})
-	requireNoErr(t, err, "assume role in "+member)
-	session := aws.Credentials{
-		AccessKeyID:     aws.ToString(out.Credentials.AccessKeyId),
-		SecretAccessKey: aws.ToString(out.Credentials.SecretAccessKey),
-		SessionToken:    aws.ToString(out.Credentials.SessionToken),
-	}
-
-	got := describeAccount(t, orgClientWith(s.srv, session), member)
-	requireEqual(t, aws.ToString(got.Id), member, "account described with the session")
+	got, err := orgClientWith(s.srv, session).DescribeOrganization(t.Context(),
+		&awsorg.DescribeOrganizationInput{})
+	requireNoErr(t, err, "describe organization with the session")
+	requireEqual(t, aws.ToString(got.Organization.MasterAccountId), defaultManagementID,
+		"management account described with the session")
 
 	tampered := session
 	tampered.SessionToken = tamper(session.SessionToken)

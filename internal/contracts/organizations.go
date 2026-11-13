@@ -211,6 +211,11 @@ type OrganizationProvider interface {
 	TagResource(ctx context.Context, resourceID string, tags []Tag) error
 	UntagResource(ctx context.Context, resourceID string, keys []string) error
 	ListTagsForResource(ctx context.Context, resourceID string, page PageInput) (*Page[Tag], error)
+
+	// ResourceTags returns every tag of the resource with the ID, in key
+	// order, or none when no resource has it, for the aws:ResourceTag
+	// condition keys. It needs no organization.
+	ResourceTags(ctx context.Context, resourceID string) ([]Tag, error)
 }
 
 // PolicyTypeSummary is a policy type and its status in a root.

@@ -6,10 +6,10 @@ development and end-to-end tests: point an AWS SDK at it and the usual
 organization, account, OU and tag calls work.
 
 It is not a production account service. No AWS account exists behind any ID
-it hands out, there are no policies, and every access key it accepts acts on
-the one organization: the configured key, the management account's root
-user's, and, when it is pointed at [identity](https://github.com/tulehq/identity),
-every key identity issued.
+it hands out, and every access key it accepts acts on the one organization:
+the configured key, the management account's root user's, and, when it is
+pointed at [identity](https://github.com/tulehq/identity), every key identity
+issued, held to the IAM policies identity holds for it.
 
 ## Running it
 
@@ -75,6 +75,123 @@ signed with the configured key never asks identity. When identity cannot be
 asked, fails, or gives no answer within 10 seconds, a request signed with
 another key fails with `500` `ServiceException`, never as an unknown key,
 and the configured key keeps working.
+
+## Permissions
+
+Standalone, nothing is evaluated: the configured key is the management
+account's root user and may call every operation.
+
+With an identity endpoint, every request signed with a key identity issued,
+an IAM user's or a role session's, is authorized as AWS authorizes it, with
+[tule.dev/policy](https://github.com/tulehq/policy), against the identity
+policies identity returns for the key (inline and attached managed policies,
+a session's being its role's):
+
+1. The root principal, the configured key or identity's root key (the same
+   key, since accounts asks identity with it), is never evaluated.
+2. A principal of any account but the management account, such as a session
+   of `OrganizationAccountAccessRole` in a member account, is refused with
+   `AccessDeniedException`, `You don't have permissions to access this
+   resource.`, whatever its policies, for every operation but
+   `DescribeOrganization`. The API reference says of each of the others that
+   only the management account (or a delegated administrator, which this
+   service has none of) may call it; the message is AWS's as AWS's re:Post
+   knowledge center reports it for a call from a member account
+   (`https://repost.aws/knowledge-center/config-organizations-admin`).
+3. Otherwise the action must be allowed, and not denied, on every resource
+   the request acts on. A request no policy allows is refused with `400`
+   `AccessDeniedException` and the message `User: <principal ARN> is not
+   authorized to perform: <action> on resource: <resource ARN> because no
+   identity-based policy allows the <action> action`, or `... with an explicit
+   deny in an identity-based policy`. `MoveAccount` is evaluated on the
+   account and both parents, and the message names the first one refused.
+
+**Breaking change:** a key identity issued with no policy allowing an
+action is now refused it. Keys that worked with no policies need one, such
+as `{"Effect":"Allow","Action":"organizations:*","Resource":"*"}`. A role
+session in a member account can no longer call anything but
+`DescribeOrganization`.
+
+Each operation is evaluated as the action and resource types the Service
+Authorization Reference lists for it (from AWS's service reference JSON for
+`organizations`, kept as test data so a test holds every routed operation to
+an entry and every entry to the reference), with ARNs in its formats, the
+account in each being the management account's:
+
+| Operations | Action | Resource |
+| --- | --- | --- |
+| `CreateOrganization`, `DescribeOrganization`, `DeleteOrganization`, `CreateAccount`, `DescribeCreateAccountStatus`, `ListCreateAccountStatus`, `ListAccounts`, `ListRoots` | `organizations:<Operation>` | `*` |
+| `DescribeAccount`, `CloseAccount`, `RemoveAccountFromOrganization` | `organizations:<Operation>` | `arn:aws:organizations::<management>:account/o-<org>/<AccountId>` |
+| `ListAccountsForParent`, `ListChildren`, `ListOrganizationalUnitsForParent`, `CreateOrganizationalUnit` | `organizations:<Operation>` | the parent: `...:root/o-<org>/r-<id>` or `...:ou/o-<org>/ou-<id>` |
+| `MoveAccount` | `organizations:MoveAccount` | the account, `SourceParentId` and `DestinationParentId` |
+| `ListParents` | `organizations:ListParents` | the child account or OU |
+| `DescribeOrganizationalUnit`, `UpdateOrganizationalUnit`, `DeleteOrganizationalUnit` | `organizations:<Operation>` | the OU |
+| `TagResource`, `UntagResource`, `ListTagsForResource` | `organizations:<Operation>` | the account, root or OU `ResourceId` names |
+
+`CreateAccount` and `CreateOrganizationalUnit` with tags also need
+`organizations:TagResource`, as their API reference pages say ("If the
+request includes tags, then the requester must have the
+`organizations:TagResource` permission") and the reference's operation list
+shows. The new resource and its ID do not exist yet, so that action is
+evaluated on `*`, with the request's `aws:RequestTag/<key>` and
+`aws:TagKeys`: a policy granting `TagResource` only on account or OU ARNs
+does not allow tagging on create, which may differ from AWS.
+
+The condition keys supplied are the global `aws:SourceIp` (the connection's
+address; `X-Forwarded-For` is not read), `aws:CurrentTime`, `aws:EpochTime`,
+`aws:SecureTransport`, `aws:PrincipalAccount`, `aws:PrincipalArn`,
+`aws:PrincipalType`, `aws:RequestedRegion` (always `us-east-1`,
+Organizations' endpoint region, whatever region a request is signed for,
+since this service accepts any) and, for an IAM user, `aws:username`; and the keys the
+reference lists for the operations that this service has:
+`aws:ResourceTag/<key>` from each evaluated resource's tags, and
+`aws:RequestTag/<key>` and `aws:TagKeys` from `CreateAccount`'s,
+`CreateOrganizationalUnit`'s and `TagResource`'s tags and `UntagResource`'s
+`TagKeys`.
+
+Known gaps in authorization:
+
+- For a role session, `aws:PrincipalArn` is the role's ARN without its path,
+  which the session ARN does not carry, where AWS gives the path. A policy
+  condition on a role ARN that includes a path, such as `ArnLike`
+  `aws:PrincipalArn` `arn:aws:iam::*:role/restricted/*`, does not match a
+  session, so a Deny written that way does not apply to sessions yet.
+- `aws:PrincipalTag/<key>` and `aws:userid` are not supplied: the
+  principal's tags and unique ID do not reach this service.
+  `organizations:PolicyType`, `organizations:ServicePrincipal` and the
+  transfer keys are not supplied, as nothing here has them.
+- An ID is held to its field's rule before evaluation, since only a valid ID
+  makes an ARN, so for an evaluated principal a request with several faults
+  may report a different one first than for the root user. Without an
+  organization, an operation on an account, root or OU fails with
+  `AWSOrganizationsNotInUseException` before evaluation. A policy, resource
+  policy or responsibility transfer ID given to the tag operations has no
+  ARN here (a policy's carries its type) and fails with
+  `TargetNotFoundException` before evaluation.
+- An evaluated principal's `UntagResource` with more than 50 distinct keys
+  is refused with `ConstraintViolationException` `MAX_TAG_LIMIT_EXCEEDED`,
+  to bound the context evaluated; AWS documents no such limit.
+- Service control policies, permissions boundaries, session policies and
+  resource-based policies are not evaluated. Organizations' resource policy
+  operations are not served, so no resource-based policy is stored either.
+- A principal of another account may call `DescribeOrganization` only
+  while its account is an `ACTIVE` member, and is then evaluated against its
+  own identity policies alone, as AWS lets any account in the organization
+  call it. An account that is not a member, such as one removed from the
+  organization, is answered with `AWSOrganizationsNotInUseException`, as the
+  `DescribeOrganization` API reference's errors say. A closed account is
+  answered with `AccessDeniedException`, `You don't have permissions to
+  access this resource.`: AWS says only that a closed or suspended account
+  cannot call AWS services, not with what error. Every other operation is
+  refused a principal of another account before evaluation, so no
+  cross-account access to the organization's accounts, OUs or tags exists
+  until resource-based policies are enforced.
+- Tags in one request whose keys differ only by case are refused, for an
+  evaluated principal, with `InvalidInputException` `DUPLICATE_TAG_KEY`,
+  since condition keys match case-insensitively and the two would merge
+  into one `aws:RequestTag` key. AWS documents no answer for this. Stored
+  tags are unique by exact key, so a resource tagged by the root user with
+  two keys differing only by case gives `aws:ResourceTag` both values.
 
 The management account is configured, not created. `CreateOrganization` makes
 it the management account and the first member of the new organization, in
@@ -177,13 +294,10 @@ paginators work.
   moves the account straight to `State` `CLOSED`, never through
   `PENDING_CLOSURE`. A closed account stays in the
   organization for good: nothing removes it after AWS's 90 days.
-- **Every accepted key may call every operation.** There are no permissions,
-  so no request is ever refused with `AccessDeniedException`, and nothing here
-  tells you whether a deployment's permissions are right. Standalone, the one
-  configured key is the management account's root user. With identity, any
-  key identity issued, an IAM user's or a role session's in a member account
-  included, acts on the one organization with every Organizations operation,
-  where AWS lets only the management account's principals call them. There
+- **Permissions need identity.** Standalone, the one configured key is the
+  management account's root user and may call every operation. With
+  identity, keys it issued are held to their identity policies as
+  [Permissions](#permissions) describes, with the gaps listed there. There
   are no delegated administrators.
 - **One organization.** The service holds at most one, around the configured
   management account, which is not checked the way AWS checks an account
@@ -202,10 +316,10 @@ paginators work.
 - **Emails are unique within the organization only,** compared without
   regard to case, where AWS requires an email no AWS account uses.
   `EMAIL_ALREADY_EXISTS` is the only `FailureReason` `CreateAccount` reports.
-- **No policies.** The root of an organization with all features reports
-  service control policies as enabled, as AWS's does, and
+- **No Organizations policies.** The root of an organization with all
+  features reports service control policies as enabled, as AWS's does, and
   `DescribeOrganization` reports the deprecated `AvailablePolicyTypes`, but no
-  policy exists or is enforced.
+  service control or other Organizations policy exists or is enforced.
 - **Operations outside the scope are unknown.** The policy and policy-type
   operations, handshakes and invitations, `LeaveOrganization`, delegated
   administrators, service access, resource policies, responsibility transfers,
@@ -276,10 +390,10 @@ make smoke      # build the image, run it, and check it serves signed requests
 make push VERSION=0.1.0   # build for amd64 and arm64 and push
 ```
 
-The end-to-end tests include one against a real identity service, built
+The end-to-end tests include ones against a real identity service, built
 from an identity checkout and run as a process pointed back at the app under
-test. The checkout is identity's sibling, `../identity`, by default, or the
-directory `TULE_E2E_IDENTITY_DIR` names; CI checks out `tulehq/identity` and
+test: identity-issued keys, and their policies enforced. The checkout is identity's sibling, `../identity`, by default, or the
+directory `TULE_E2E_IDENTITY_DIR` names; CI checks out `tulehq/identity` at v0.2.0 and
 sets it. Without a checkout that test fails rather than being skipped.
 
 ## License

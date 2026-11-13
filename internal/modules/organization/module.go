@@ -12,6 +12,7 @@ import (
 
 	"github.com/gasmod/gas"
 
+	"tule.dev/accounts/internal/authz"
 	"tule.dev/accounts/internal/contracts"
 	"tule.dev/accounts/internal/orgapi"
 )
@@ -22,6 +23,7 @@ const moduleName = "tule/modules/organization"
 type Module struct {
 	router   *gas.Router
 	store    contracts.OrganizationProvider
+	authz    *authz.Authorizer
 	handlers map[string]handler
 }
 
@@ -29,10 +31,14 @@ type Module struct {
 // dispatcher, which renders it as an Organizations error document.
 type handler func(gas.Context) error
 
-// NewModule returns a Module serving from store. It registers its route when
-// the app initializes it.
-func NewModule(router *gas.Router, store contracts.OrganizationProvider) *Module {
-	m := &Module{router: router, store: store}
+// NewModule returns a Module serving from store, authorizing each request
+// through az. It registers its route when the app initializes it.
+func NewModule(
+	router *gas.Router,
+	store contracts.OrganizationProvider,
+	az *authz.Authorizer,
+) *Module {
+	m := &Module{router: router, store: store, authz: az}
 	m.handlers = map[string]handler{
 		"CreateOrganization":               m.createOrganization,
 		"DescribeOrganization":             m.describeOrganization,
@@ -79,9 +85,10 @@ func (m *Module) Close(context.Context) error {
 	return nil
 }
 
-// dispatch serves the operation the request names. An operation this service
-// does not serve, whether or not Organizations has it, is answered as an
-// unknown operation, as AWS answers a target it does not know.
+// dispatch serves the operation the request names, once the request is
+// authorized. An operation this service does not serve, whether or not
+// Organizations has it, is answered as an unknown operation, as AWS answers
+// a target it does not know.
 func (m *Module) dispatch(ctx gas.Context) error {
 	op := orgapi.Operation(ctx.Header(orgapi.TargetHeader))
 
@@ -89,6 +96,9 @@ func (m *Module) dispatch(ctx gas.Context) error {
 	if !ok {
 		return orgapi.WriteError(ctx, orgapi.ErrUnknownOperation(
 			"The X-Amz-Target header names no Organizations operation this service serves."))
+	}
+	if err := m.authorize(ctx, op); err != nil {
+		return orgapi.WriteError(ctx, err)
 	}
 	if err := h(ctx); err != nil {
 		return orgapi.WriteError(ctx, err)
@@ -102,10 +112,14 @@ func decode[T any](ctx gas.Context) (T, error) {
 	var body T
 	err := json.NewDecoder(ctx.Request().Body).Decode(&body)
 	if err != nil && !errors.Is(err, io.EOF) {
-		return body, orgapi.ErrSerialization("The request body is not valid JSON, " +
-			"or a field has the wrong type.")
+		return body, errSerialization()
 	}
 	return body, nil
+}
+
+func errSerialization() error {
+	return orgapi.ErrSerialization("The request body is not valid JSON, " +
+		"or a field has the wrong type.")
 }
 
 // pageOf checks a list request's page parameters.
