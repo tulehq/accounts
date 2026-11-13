@@ -237,6 +237,9 @@ paginators work.
 - **The credential's region is not checked.** It is signed, but any region
   verifies: Organizations is global behind `us-east-1`, and local clients are
   set up for whatever region they work in.
+- **Session tokens are refused.** The one configured key is long-term, so a
+  request signed with temporary credentials, carrying `X-Amz-Security-Token`,
+  fails with `UnrecognizedClientException`.
 - **One process per database.** The store is one SQLite file reached through
   one connection, which serializes the server's own transactions; nothing
   coordinates two servers pointed at the same file.
