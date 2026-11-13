@@ -71,6 +71,7 @@ const (
 	TypeIncompleteSig               = "IncompleteSignatureException"
 	TypeInvalidSignature            = "InvalidSignatureException"
 	TypeUnrecognizedClient          = "UnrecognizedClientException"
+	TypeExpiredToken                = "ExpiredTokenException"
 	constraintReasonOUDepth         = "OU_DEPTH_LIMIT_EXCEEDED"
 	constraintReasonOUNumber        = "OU_NUMBER_LIMIT_EXCEEDED"
 	constraintReasonMaxTags         = "MAX_TAG_LIMIT_EXCEEDED"
