@@ -27,6 +27,7 @@ import (
 const (
 	targetPrefix   = "AWSOrganizationsV20161128."
 	describeTarget = targetPrefix + "DescribeOrganization"
+	createTarget   = targetPrefix + "CreateOrganization"
 	amzJSON        = "application/x-amz-json-1.1"
 )
 
@@ -128,6 +129,39 @@ func TestALargeRepeatedSignedHeadersListReturnsQuickly(t *testing.T) {
 	}
 	requireEqual(t, status, http.StatusForbidden, "status")
 	requireEqual(t, code, "IncompleteSignatureException", "error type")
+}
+
+func TestANonCanonicalRequiredHeaderIsBound(t *testing.T) {
+	// A required header listed other than as its lowercase name, with a
+	// leading space or capitalized, names no header in the canonical
+	// request, so the signature covers an empty value instead of the header.
+	// Each request is signed that way, then changed as a relay would change
+	// it.
+	t.Run("x-amz-target with a leading space", func(t *testing.T) {
+		srv := startServer(t, nil)
+		req := handSigned(t, srv, "content-type;host; x-amz-target;x-amz-date")
+		// The signed read becomes a write.
+		req.Header.Set("X-Amz-Target", createTarget)
+
+		status, code := send(t, srv, req)
+		requireEqual(t, status, http.StatusForbidden, "status")
+		requireEqual(t, code, "IncompleteSignatureException", "error type")
+
+		_, err := clientFor(srv).DescribeOrganization(t.Context(),
+			&awsorg.DescribeOrganizationInput{})
+		requireAs[*types.AWSOrganizationsNotInUseException](t, err)
+	})
+
+	t.Run("Host capitalized", func(t *testing.T) {
+		srv := startServer(t, nil)
+		req := handSigned(t, srv, "Host;content-type;x-amz-date;x-amz-target")
+		// The request signed for this server is sent on under another name.
+		req.Host = "elsewhere.example"
+
+		status, code := send(t, srv, req)
+		requireEqual(t, status, http.StatusForbidden, "status")
+		requireEqual(t, code, "IncompleteSignatureException", "error type")
+	})
 }
 
 func TestARequestSignedForAnyRegionIsServed(t *testing.T) {
