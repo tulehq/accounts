@@ -12,12 +12,14 @@ import (
 // answered with. The messages are the verifier's own, the AWS JSON services'
 // texts.
 //
-// KindExpiredSessionToken cannot occur with the static key, but is mapped
-// for keys with session tokens that a KeySource may hand out later. The
+// KindInvalidSessionToken and KindExpiredSessionToken come from identity,
+// for role session keys, or from the root key, which takes no token. The
 // Kinds this configuration cannot produce (presigned URLs, a streamed body)
 // and KindKeyLookupFailed are returned as the *sigv4.Error itself: orgapi
 // answers any error it does not know with ServiceException and logs it, so
-// they surface as a 500 with their cause in the log.
+// they surface as a 500 with their cause in the log. A failed lookup at
+// identity is never answered as an unknown key, so the client sees a fault
+// on the server's side rather than a key to throw away.
 func sigv4Error(e *sigv4.Error) error {
 	switch e.Kind {
 	case sigv4.KindMissingAuth:

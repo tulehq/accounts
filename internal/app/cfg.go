@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/gasmod/gas"
@@ -18,11 +19,15 @@ type hstsSettings struct {
 	MaxAge time.Duration
 }
 
-// authSettings holds the one access key the server accepts. Every request
-// must be SigV4-signed with it, so both fields are required.
+// authSettings holds the root key the server accepts. Every request must be
+// SigV4-signed with it, so both key fields are required. IdentityEndpoint is
+// the identity service's base URL, or empty to run standalone: set, a key
+// identity issued is accepted too, and identity is asked with the root key,
+// which must therefore be identity's root key as well.
 type authSettings struct {
-	AccessKeyID     string
-	SecretAccessKey string
+	AccessKeyID      string
+	SecretAccessKey  string
+	IdentityEndpoint string
 }
 
 // errNoCredentials is returned when the access key is not configured.
@@ -96,11 +101,28 @@ func bindConfig(store gas.ConfigProvider, env config.Environment) (*Config, erro
 	if cfg.Auth == nil || cfg.Auth.AccessKeyID == "" || cfg.Auth.SecretAccessKey == "" {
 		return nil, errNoCredentials
 	}
+	if err := checkIdentityEndpoint(cfg.Auth.IdentityEndpoint); err != nil {
+		return nil, err
+	}
 	if err := checkManagementAccount(cfg.Organization); err != nil {
 		return nil, err
 	}
 
 	return &cfg, nil
+}
+
+// checkIdentityEndpoint holds the identity endpoint, when set, to an
+// absolute http or https URL.
+func checkIdentityEndpoint(endpoint string) error {
+	if endpoint == "" {
+		return nil
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("config: Auth.IdentityEndpoint %q is not an http or https URL",
+			endpoint)
+	}
+	return nil
 }
 
 // checkManagementAccount holds the configured management account to the
@@ -172,6 +194,9 @@ func applyDefaults(store gas.ConfigProvider) error {
 	setDefault("Server.ShutdownTimeout", "7s")
 
 	setDefault("Store.Path", "./data/accounts.db")
+
+	// Unset, accounts runs standalone, on the root key alone.
+	setDefault("Auth.IdentityEndpoint", "")
 
 	// The management account the organization is created around. The ID is
 	// secret-store's default account, so the two agree out of the box; the

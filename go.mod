@@ -5,7 +5,9 @@ go 1.27.4
 require (
 	github.com/aws/aws-sdk-go-v2 v1.48.0
 	github.com/aws/aws-sdk-go-v2/credentials v1.21.0
+	github.com/aws/aws-sdk-go-v2/service/iam v1.65.0
 	github.com/aws/aws-sdk-go-v2/service/organizations v1.62.8
+	github.com/aws/aws-sdk-go-v2/service/sts v1.52.0
 	github.com/aws/smithy-go v1.28.9
 	github.com/gasmod/gas v0.9.0
 	github.com/gasmod/gas/config v0.9.0
@@ -15,13 +17,17 @@ require (
 	github.com/go-chi/chi/v5 v5.5.1-0.20261018135022-9f8adb1aabaa
 	github.com/rs/zerolog v1.35.1
 	modernc.org/sqlite v1.62.0
-	tule.dev/sigv4 v0.1.0
+	tule.dev/identity v0.1.0
+	tule.dev/sigv4 v0.2.0
 )
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.12 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.12 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/v4a v1.5.12 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.25 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.12 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.16 // indirect
 	github.com/gasmod/omap v0.2.1 // indirect
