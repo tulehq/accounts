@@ -7,6 +7,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"runtime"
@@ -16,6 +17,7 @@ import (
 
 	awsorg "github.com/aws/aws-sdk-go-v2/service/organizations"
 	"github.com/aws/aws-sdk-go-v2/service/organizations/types"
+	"github.com/aws/smithy-go"
 	"github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
@@ -164,6 +166,17 @@ func TestANonCanonicalRequiredHeaderIsBound(t *testing.T) {
 	})
 }
 
+func TestARequestSignedForAnotherServiceIsRefused(t *testing.T) {
+	// A credential scoped to s3 signs for S3; Organizations takes only its
+	// own signing name.
+	c := clientFor(startServer(t, nil), func(o *awsorg.Options) { o.RetryMaxAttempts = 1 })
+
+	_, err := c.DescribeOrganization(t.Context(), &awsorg.DescribeOrganizationInput{},
+		awsorg.WithSigV4SigningName("s3"))
+	requireCode(t, err, "InvalidSignatureException")
+	requireMessage(t, err, "Credential should be scoped to correct service: 'organizations'.")
+}
+
 func TestARequestSignedForAnyRegionIsServed(t *testing.T) {
 	// Organizations is global behind us-east-1, and local clients are set up
 	// for whatever region they work in, so the credential's region is signed
@@ -267,4 +280,22 @@ func hmacSHA256(key []byte, data string) []byte {
 	m := hmac.New(sha256.New, key)
 	m.Write([]byte(data))
 	return m.Sum(nil)
+}
+
+// requireMessage fails unless err is an API error with the given message.
+func requireMessage(t *testing.T, err error, msg string) {
+	t.Helper()
+	apiErr := asAPIError(t, err)
+	if apiErr.ErrorMessage() != msg {
+		t.Fatalf("message = %q, want %q", apiErr.ErrorMessage(), msg)
+	}
+}
+
+func asAPIError(t *testing.T, err error) smithy.APIError {
+	t.Helper()
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("want an API error, got %v", err)
+	}
+	return apiErr
 }

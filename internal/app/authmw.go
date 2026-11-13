@@ -17,7 +17,7 @@ const maxBodySize = 1 << 20
 
 // newVerifier returns the SigV4 verifier every request but the probes goes
 // through. It knows the one configured access key, belonging to the
-// management account's root user, signed for any service in any region.
+// management account's root user, signed for organizations in any region.
 // Host, X-Amz-Date and X-Amz-Target must be signed: X-Amz-Target names the
 // operation, and left unsigned it would let whoever relays a signed read
 // turn it into a removal, since the two carry the same body.
@@ -36,6 +36,7 @@ func newVerifier(cfg *Config) (*sigv4.Verifier, error) {
 		keys,
 		sigv4.WithBufferedPayload(maxBodySize),
 		sigv4.WithRequiredSignedHeaders("host", "x-amz-date", "x-amz-target"),
+		sigv4.WithService("organizations"),
 		sigv4.WithErrorMap(sigv4Error),
 	)
 	if err != nil {
