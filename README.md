@@ -224,13 +224,17 @@ paginators work.
   The SDK still models it, so this service still sends it: `ACTIVE`, or
   `SUSPENDED` for a closed account.
 - **Timestamps have millisecond precision.**
-- **Signature verification is request-level.** The method, path, query, signed
-  headers and the body's hash are checked, along with the credential's access
-  key and a 15-minute clock skew. A request body larger than 1 MiB is refused.
-  A signature must cover `host`, `x-amz-date` and `x-amz-target`, and must
-  carry a real SHA-256 of the body: `UNSIGNED-PAYLOAD` is rejected, since it
-  would leave the body outside the signature and let a relay swap one
+- **Signature verification is request-level,** by
+  [tule.dev/sigv4](https://github.com/tulehq/sigv4). The method, path, query,
+  signed headers and the body's hash are checked, along with the credential's
+  access key and a 15-minute clock skew. A request body larger than 1 MiB is
+  refused. A signature must cover `host`, `x-amz-date` and `x-amz-target`. It
+  must carry a real SHA-256 of the body: `UNSIGNED-PAYLOAD` is rejected, since
+  it would leave the body outside the signature and let a relay swap one
   operation's body for another's.
+- **The credential's region is not checked.** It is signed, but any region
+  verifies: Organizations is global behind `us-east-1`, and local clients are
+  set up for whatever region they work in.
 - **One process per database.** The store is one SQLite file reached through
   one connection, which serializes the server's own transactions; nothing
   coordinates two servers pointed at the same file.

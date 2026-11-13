@@ -140,7 +140,7 @@ func applyDefaults(store gas.ConfigProvider) error {
 	// (5s read, 10s write), which are too short for a signed request: the
 	// signature covers the whole body, so a read cut short mid-body surfaces
 	// to the client as a signature failure or a broken connection rather than
-	// as a timeout. A request body may be up to sigv4.MaxBodySize, 1 MiB, and
+	// as a timeout. A request body may be up to maxBodySize, 1 MiB, and
 	// 30s covers that at well under dial-up speed. Responses are a page of at
 	// most 20 items, so writes get the same budget. IdleTimeout keeps the SDKs'
 	// connection reuse working between calls, and matches the gas default; it

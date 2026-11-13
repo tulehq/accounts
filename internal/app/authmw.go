@@ -1,15 +1,52 @@
 package app
 
 import (
+	"fmt"
 	"net/http"
+
+	"tule.dev/sigv4"
 
 	"tule.dev/accounts/internal/modules/health"
 	"tule.dev/accounts/internal/orgapi"
-	"tule.dev/accounts/internal/sigv4"
 )
 
+// maxBodySize bounds the request body the verifier buffers to hash it. The
+// largest legitimate request is a CreateAccount or CreateOrganizationalUnit
+// with 50 tags, a few tens of KiB at most, so this leaves ample room.
+const maxBodySize = 1 << 20
+
+// newVerifier returns the SigV4 verifier every request but the probes goes
+// through. It knows the one configured access key, belonging to the
+// management account's root user, signed for any service in any region.
+// Host, X-Amz-Date and X-Amz-Target must be signed: X-Amz-Target names the
+// operation, and left unsigned it would let whoever relays a signed read
+// turn it into a removal, since the two carry the same body.
+func newVerifier(cfg *Config) (*sigv4.Verifier, error) {
+	account := cfg.Organization.ManagementAccountID
+	keys, err := sigv4.NewStaticKey(sigv4.StaticKeyConfig{
+		AccessKeyID:     cfg.Auth.AccessKeyID,
+		SecretAccessKey: cfg.Auth.SecretAccessKey,
+		AccountID:       account,
+		ARN:             "arn:aws:iam::" + account + ":root",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to build the signature verifier: %w", err)
+	}
+	v, err := sigv4.New(
+		keys,
+		sigv4.WithBufferedPayload(maxBodySize),
+		sigv4.WithRequiredSignedHeaders("host", "x-amz-date", "x-amz-target"),
+		sigv4.WithErrorMap(sigv4Error),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build the signature verifier: %w", err)
+	}
+	return v, nil
+}
+
 // verifySignature rejects requests whose SigV4 signature does not verify
-// against v.
+// against v, and serves the rest as Verify returns them, with the signer's
+// principal in their context and the body the signature covered.
 //
 // The health probes are exempt, so a container's health check needs no
 // credentials; nothing else is, because any web page the developer has open
@@ -22,11 +59,12 @@ func verifySignature(v *sigv4.Verifier) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			if err := v.Verify(r); err != nil {
+			verified, err := v.Verify(r)
+			if err != nil {
 				orgapi.WriteHTTPError(w, r, err)
 				return
 			}
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, verified)
 		})
 	}
 }
